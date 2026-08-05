@@ -1,0 +1,7 @@
+salida/
+__pycache__/
+*.pyc
+chrome_profile_tableau/
+estado_sesion.json
+captura_*.png
+.env
