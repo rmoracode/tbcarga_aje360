@@ -15,10 +15,10 @@ on:
         description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
         required: false
         default: ""
-  schedule:
-    # 12:00 UTC = 06:00 Guatemala. Desactivado hasta confirmar la primera
-    # corrida manual exitosa -- descomentar cuando este validado.
-    # - cron: "0 12 * * *"
+  # schedule: se agrega despues de confirmar la primera corrida manual exitosa
+  # (ej. "- cron: '0 12 * * *'" para 06:00 Guatemala). Un `schedule:` vacio
+  # rompe el parseo del workflow, por eso se comenta la clave entera, no solo
+  # la linea del cron.
 
 jobs:
   descargar:
