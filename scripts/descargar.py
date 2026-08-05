@@ -238,6 +238,19 @@ def main() -> int:
                 pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_sin_boton_final.png"))
                 raise SystemExit("No se encontro boton Descargar/Download del dialogo")
 
+            # El boton queda DESHABILITADO cuando la tabulacion cruzada sale
+            # vacia -- pasa en sucursales sin ventas del canal TRADICIONAL (ej.
+            # centros de distribucion/plantas, no puntos de venta). No es un
+            # error: no hay nada que descargar para esa sucursal ese mes. Se
+            # sale limpio (exit 0) en vez de reventar con un timeout confuso.
+            if boton_final.is_disabled():
+                print(f"SIN DATOS -- '{SUCURSAL}' no tiene filas para "
+                      f"{MES_OBJETIVO} en canal TRADICIONAL (botón deshabilitado, "
+                      f"tabulación cruzada vacía). No es un error.", flush=True)
+                contexto.close()
+                navegador.close()
+                return 0
+
             print("Click final, esperando el archivo...", flush=True)
             with pagina.expect_download(timeout=90000) as info_descarga:
                 boton_final.click()
