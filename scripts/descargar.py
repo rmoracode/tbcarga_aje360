@@ -3,15 +3,17 @@ scripts/descargar.py — Version para GitHub Actions del automatizador de
 'DATA PARA ANALISIS' (Tableau). Mismo flujo probado localmente en ajecam360/
 version360/navegador/descargar_agosto.py, adaptado para correr headless en CI:
 
-  - La sesion NO vive en un archivo del repo (nunca se commitea) -- se recibe
-    por la variable de entorno TABLEAU_STORAGE_STATE (JSON completo, el mismo
-    contenido que genera login.py localmente), guardada como GitHub Secret.
+  - INICIA SESION EL MISMO con usuario/clave (GitHub Secrets). Antes usaba una
+    sesion exportada (TABLEAU_STORAGE_STATE) pero esa vence en ~18h sin avisar,
+    y el cron diario fallaba en cuanto expiraba. Loguearse de cero en cada
+    corrida elimina ese problema de raiz: no hay nada que renovar a mano.
   - headless=True (sin pantalla en el runner).
   - Sucursal / mes objetivo / mes a desmarcar por variables de entorno, para
     poder correr el mismo script una vez por sucursal desde el workflow.
 
 Variables de entorno esperadas:
-    TABLEAU_STORAGE_STATE   JSON completo de la sesion (contenido, no ruta)
+    TABLEAU_USER             usuario de Tableau (secret)
+    TABLEAU_PASSWORD         clave de Tableau (secret)
     SUCURSAL                default: "AJEMAYA SUCURSAL BARBERENA"
     MES_OBJETIVO             default: "agosto"
     MES_A_DESMARCAR          default: "" (si vacio, no desmarca nada)
@@ -44,23 +46,50 @@ URL_VISTA = (
 )
 
 
-def _escribir_estado_sesion() -> str:
-    contenido = os.environ.get("TABLEAU_STORAGE_STATE", "").strip()
-    if not contenido:
-        raise SystemExit(
-            "Falta TABLEAU_STORAGE_STATE (secret de GitHub Actions) -- "
-            "generalo localmente con login.py y pegalo como secret."
-        )
-    # Validar que sea JSON valido antes de escribirlo, para dar un error claro
-    # en vez de que Playwright falle mas adelante con un mensaje confuso.
-    try:
-        json.loads(contenido)
-    except json.JSONDecodeError as e:
-        raise SystemExit(f"TABLEAU_STORAGE_STATE no es JSON valido: {e}")
-    fd, ruta = tempfile.mkstemp(suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(contenido)
-    return ruta
+URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
+
+
+def iniciar_sesion(pagina):
+    """Login con usuario/clave en el formulario nativo de Tableau.
+
+    Es un formulario normal (sin SSO ni 2FA), asi que se puede automatizar sin
+    depender de una sesion pre-generada que caduque.
+    """
+    usuario = os.environ.get("TABLEAU_USER", "").strip()
+    clave = os.environ.get("TABLEAU_PASSWORD", "")
+    if not usuario or not clave:
+        raise SystemExit("Faltan TABLEAU_USER / TABLEAU_PASSWORD (secrets de GitHub).")
+
+    print("Iniciando sesion en Tableau...", flush=True)
+    pagina.goto(URL_LOGIN, wait_until="domcontentloaded", timeout=60000)
+    pagina.wait_for_timeout(5000)
+
+    # Los campos no siempre tienen ids estables entre versiones: se buscan por
+    # tipo/atributos en varias variantes antes de rendirse.
+    campo_usuario = None
+    for sel in ["input[name='username']", "input#username", "input[type='text']"]:
+        if pagina.locator(sel).count() > 0:
+            campo_usuario = pagina.locator(sel).first
+            break
+    campo_clave = None
+    for sel in ["input[name='password']", "input#password", "input[type='password']"]:
+        if pagina.locator(sel).count() > 0:
+            campo_clave = pagina.locator(sel).first
+            break
+    if campo_usuario is None or campo_clave is None:
+        pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_login_sin_campos.png"))
+        raise SystemExit("No se encontraron los campos de login -- ver error_login_sin_campos.png")
+
+    campo_usuario.fill(usuario)
+    campo_clave.fill(clave)
+    campo_clave.press("Enter")
+    pagina.wait_for_timeout(10000)
+
+    # Si el formulario sigue visible, las credenciales no fueron aceptadas.
+    if pagina.locator("input[type='password']").count() > 0:
+        pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_login_rechazado.png"))
+        raise SystemExit("Login rechazado -- revisar usuario/clave (ver error_login_rechazado.png)")
+    print("Sesion iniciada OK.", flush=True)
 
 
 def encontrar_frame_con_checkboxes(pagina, minimo=10, intentos=18, espera_s=10):
@@ -135,15 +164,14 @@ def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
 
 
 def main() -> int:
-    ruta_estado = _escribir_estado_sesion()
-    try:
-        with sync_playwright() as p:
+    with sync_playwright() as p:
+        if True:  # (bloque conservado para no re-indentar todo el cuerpo)
             navegador = p.chromium.launch(headless=True)
-            contexto = navegador.new_context(storage_state=ruta_estado,
-                                              viewport={"width": 1600, "height": 1000},
+            contexto = navegador.new_context(viewport={"width": 1600, "height": 1000},
                                               accept_downloads=True,
                                               locale="es-GT")
             pagina = contexto.new_page()
+            iniciar_sesion(pagina)
             print(f"Navegando: {URL_VISTA}", flush=True)
             # 'networkidle' es poco confiable para apps como Tableau (espera
             # que la red quede en TOTAL silencio, y cualquier ping de fondo
@@ -270,11 +298,6 @@ def main() -> int:
             contexto.close()
             navegador.close()
         return 0
-    finally:
-        try:
-            os.remove(ruta_estado)
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":
