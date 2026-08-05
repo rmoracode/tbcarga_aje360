@@ -145,7 +145,14 @@ def main() -> int:
                                               locale="es-GT")
             pagina = contexto.new_page()
             print(f"Navegando: {URL_VISTA}", flush=True)
-            pagina.goto(URL_VISTA, wait_until="networkidle", timeout=60000)
+            # 'networkidle' es poco confiable para apps como Tableau (espera
+            # que la red quede en TOTAL silencio, y cualquier ping de fondo
+            # -telemetria, polling- puede impedir que eso pase nunca). Con 10
+            # jobs pegandole al mismo servidor a la vez, uno la sufrio como
+            # timeout de 60s. 'domcontentloaded' es mas robusto -- de todas
+            # formas el script ya espera explicitamente (sleeps) a que el
+            # contenido real aparezca despues de esto.
+            pagina.goto(URL_VISTA, wait_until="domcontentloaded", timeout=60000)
 
             print("Buscando el frame con los filtros...", flush=True)
             fr = encontrar_frame_con_checkboxes(pagina)
