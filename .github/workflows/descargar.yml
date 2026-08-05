@@ -11,7 +11,10 @@ on:
         description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
         required: false
         default: "mayo"
-  # schedule: se agrega despues de confirmar la corrida de las 10 sucursales.
+  schedule:
+    # 12:00 UTC = 06:00 Guatemala (UTC-6). Corre las 10 sucursales + combina +
+    # sube a Drive automaticamente, sin que nadie lo dispare.
+    - cron: "0 12 * * *"
 
 jobs:
   descargar:
@@ -88,7 +91,7 @@ jobs:
       - name: Combinar en un solo archivo
         run: |
           mkdir -p combinado
-          python scripts/combinar.py todos/ "combinado/agosto_${{ github.event.inputs.mes_objetivo || 'agosto' }}_todas_sucursales.csv"
+          python scripts/combinar.py todos/ "combinado/${{ github.event.inputs.mes_objetivo || 'agosto' }}_2026_todas_sucursales.csv"
 
       - name: Subir combinado como artifact
         uses: actions/upload-artifact@v4
