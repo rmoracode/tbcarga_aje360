@@ -64,6 +64,14 @@ def _escribir_estado_sesion() -> str:
 
 
 def encontrar_frame_con_checkboxes(pagina, minimo=10, intentos=18, espera_s=10):
+    # El numero total de checkboxes varia por sucursal (la lista de dias con
+    # datos de 'fecha_liquidacion' es mas larga o corta segun cuanta actividad
+    # tenga esa sucursal) -- un umbral fijo (ej. >=10) puede cumplirse ANTES de
+    # que el panel termine de renderizar del todo, y el checkbox que se clickea
+    # despues queda obsoleto (el DOM se re-arma mientras tanto). En vez de un
+    # minimo fijo, se espera a que el conteo se ESTABILICE: dos lecturas
+    # seguidas iguales (y >0) antes de dar por lista la pagina.
+    anterior = -1
     for i in range(intentos):
         time.sleep(espera_s)
         mejor, mejor_n = None, 0
@@ -75,8 +83,9 @@ def encontrar_frame_con_checkboxes(pagina, minimo=10, intentos=18, espera_s=10):
             except Exception:
                 pass
         print(f"  {(i+1)*espera_s}s -- mejor frame: {mejor_n} checkboxes", flush=True)
-        if mejor_n >= minimo:
+        if mejor_n >= minimo and mejor_n == anterior:
             return mejor
+        anterior = mejor_n
     return None
 
 
@@ -107,13 +116,21 @@ MESES_EN = {
 }
 
 
-def click_checkbox_por_texto(fr, texto_buscado):
+def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
     candidatos = {texto_buscado, MESES_EN.get(texto_buscado.lower(), texto_buscado)}
-    checks = fr.locator("input[type=checkbox]")
-    for i in range(checks.count()):
-        if texto_de_checkbox(checks.nth(i)) in candidatos:
-            checks.nth(i).click()
-            return True
+    for intento in range(reintentos):
+        try:
+            checks = fr.locator("input[type=checkbox]")
+            for i in range(checks.count()):
+                if texto_de_checkbox(checks.nth(i)) in candidatos:
+                    checks.nth(i).click(timeout=10000)
+                    return True
+            return False
+        except Exception as e:
+            # El elemento pudo quedar obsoleto si el DOM se re-armo justo en
+            # medio del clic -- se relocaliza desde cero en vez de fallar.
+            print(f"    (reintento {intento+1}/{reintentos} tras: {type(e).__name__})", flush=True)
+            time.sleep(2)
     return False
 
 
