@@ -122,7 +122,16 @@ def main() -> int:
 
             print(f"Marcando '{MES_OBJETIVO}'...", flush=True)
             if not click_checkbox_por_texto(fr, MES_OBJETIVO):
-                raise SystemExit(f"No se encontro el checkbox de mes '{MES_OBJETIVO}'")
+                # Diagnostico: mostrar los textos REALES de todos los checkboxes
+                # en vez de fallar a ciegas -- puede ser un tema de idioma/locale
+                # distinto entre el runner de CI y el Chrome local donde se probo.
+                checks = fr.locator("input[type=checkbox]")
+                textos = [texto_de_checkbox(checks.nth(i)) for i in range(checks.count())]
+                print("TEXTOS REALES de los checkboxes encontrados:", flush=True)
+                for i, t in enumerate(textos):
+                    print(f"  [{i}] {t!r}", flush=True)
+                pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_checkbox_no_encontrado.png"))
+                raise SystemExit(f"No se encontro el checkbox de mes '{MES_OBJETIVO}' -- ver textos arriba")
             time.sleep(2)
             if MES_A_DESMARCAR:
                 print(f"Desmarcando '{MES_A_DESMARCAR}'...", flush=True)
