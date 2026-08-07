@@ -1,0 +1,68 @@
+name: Descargar Incentivos Comerciales (Tableau)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mes_objetivo:
+        description: "Mes a marcar (ej. agosto)"
+        required: false
+        default: "agosto"
+      mes_a_desmarcar:
+        description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
+        required: false
+        default: ""
+  schedule:
+    # 12:15 UTC = 06:15 Guatemala — 15 min despues del job de ventas
+    # (descargar.yml) para no pegarle a Tableau con dos logins simultaneos.
+    - cron: "15 12 * * *"
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Descargar vista de Incentivos
+        env:
+          TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
+          TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
+          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo || 'agosto' }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar || '' }}
+          SALIDA_DIR: ./salida
+        run: python scripts/descargar_incentivos.py
+
+      - name: Subir resultado como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incentivos-${{ github.event.inputs.mes_objetivo || 'agosto' }}
+          path: salida/
+          retention-days: 14
+
+      - name: Instalar rclone
+        if: success()
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configurar rclone
+        if: success()
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+      - name: Subir CSV a Google Drive
+        if: success()
+        run: |
+          rclone copy salida/ "gdrive_aje:incentivos/" -v --include "*.csv"
