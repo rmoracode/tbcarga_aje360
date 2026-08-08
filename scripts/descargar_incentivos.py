@@ -113,6 +113,18 @@ def encontrar_frame_con_filtro_mes(pagina, intentos=18, espera_s=10):
     return None
 
 
+def click_con_fallback(locator, timeout=30000):
+    """El overlay 'tab-glass clear-glass' de esta vista intercepta clicks incluso
+    después de esperar a que 'desaparezca' (visto en corridas #2 y #3, siempre en
+    el mismo punto) -- se intenta normal primero, y si Playwright lo bloquea por
+    intercepción se fuerza (bypassa el chequeo de actionability)."""
+    try:
+        locator.click(timeout=timeout)
+    except Exception as e:
+        print(f"    click normal falló ({type(e).__name__}), forzando...", flush=True)
+        locator.click(force=True)
+
+
 def texto_de_checkbox(el) -> str:
     return el.evaluate("""
         e => {
@@ -233,20 +245,27 @@ def main() -> int:
             )
         time.sleep(2)
 
-        print("Esperando 60s fijos a que la tabla recargue...", flush=True)
-        time.sleep(60)
-        # Defensa extra: si el overlay de carga de Tableau ('tab-glass') sigue
-        # visible, esperar hasta que desaparezca antes de clickear nada más -- fue
-        # justo ese overlay el que interceptó el click de 'Descargar' en la corrida
-        # anterior (el popup del filtro había quedado abierto de fondo).
-        try:
+        print("Esperando a que la tabla recargue y el overlay de carga desaparezca...", flush=True)
+        # Corridas #2 y #3 (2026-08-08) mostraron que 60s + una sola espera de 30s
+        # NO alcanzan -- el reporte cruza cliente x incentivo x mes y es pesado. Se
+        # sondea de verdad (hasta 3 min) en vez de una espera fija: 'ausente' = 0
+        # elementos .tab-glass visibles en NINGÚN frame, dos lecturas seguidas.
+        estable_seguidas = 0
+        for i in range(36):  # 36 x 5s = 180s tope
+            time.sleep(5)
+            hay_glass = False
             for f in pagina.frames:
-                glass = f.locator(".tab-glass")
-                if glass.count() > 0:
-                    print("  overlay de carga detectado, esperando a que desaparezca...", flush=True)
-                    glass.first.wait_for(state="hidden", timeout=30000)
-        except Exception:
-            pass
+                try:
+                    if f.locator(".tab-glass:visible").count() > 0:
+                        hay_glass = True
+                        break
+                except Exception:
+                    pass
+            estable_seguidas = 0 if hay_glass else estable_seguidas + 1
+            if estable_seguidas >= 2:
+                print(f"  {(i + 1) * 5}s -- overlay ausente, se sigue.", flush=True)
+                break
+            print(f"  {(i + 1) * 5}s -- overlay de carga todavía visible...", flush=True)
         pagina.screenshot(path=os.path.join(SALIDA_DIR, "antes_de_descargar.png"))
 
         mejor, mejor_n = None, 0
@@ -261,7 +280,7 @@ def main() -> int:
             fr = mejor
 
         print("Click en 'Descargar'/'Download'...", flush=True)
-        fr.get_by_text(RE_DESCARGAR).first.click()
+        click_con_fallback(fr.get_by_text(RE_DESCARGAR).first)
         time.sleep(2)
 
         opcion = None
@@ -281,14 +300,14 @@ def main() -> int:
             raise SystemExit("No se encontro 'Tabulación cruzada' -- ver error_sin_menu.png")
 
         print("Click en 'Tabulación cruzada'...", flush=True)
-        opcion.click()
+        click_con_fallback(opcion)
         time.sleep(4)
 
         for scope in (fr, pagina):
             try:
                 radio_csv = scope.get_by_text("CSV", exact=True)
                 if radio_csv.count() > 0:
-                    radio_csv.first.click()
+                    click_con_fallback(radio_csv.first)
                     break
             except Exception:
                 pass
@@ -317,7 +336,7 @@ def main() -> int:
 
         print("Click final, esperando el archivo...", flush=True)
         with pagina.expect_download(timeout=150000) as info_descarga:
-            boton_final.click()
+            click_con_fallback(boton_final)
         descarga = info_descarga.value
         nombre = f"incentivos_{MES_OBJETIVO}.csv"
         ruta_salida = os.path.join(SALIDA_DIR, nombre)
