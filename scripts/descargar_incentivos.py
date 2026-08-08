@@ -234,26 +234,27 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_sin_aplicar.png"))
         return False
 
-    # Confirmar que el popup de verdad cerró. Corrida #5 (2026-08-08) probó que el
-    # click en 'Aplicar' SÍ funciona -- el screenshot mostró agosto marcado y mayo
-    # desmarcado correctamente -- pero solo se esperaban 2s antes de revisar, y esta
-    # vista ya demostró tardar minutos en reaccionar a un cambio de filtro (la tabla
-    # principal tarda >180s). Se sondea de verdad en vez de una espera corta fija.
-    quedan = -1
-    for i in range(24):  # 24 x 5s = 120s tope
-        time.sleep(5)
-        try:
-            quedan = popup_scope.locator("input[type=checkbox]:visible").count()
-        except Exception:
-            quedan = -1
-        if quedan == 0:
-            print(f"  {(i + 1) * 5}s -- popup cerrado.", flush=True)
-            break
-        print(f"  {(i + 1) * 5}s -- todavía {quedan} checkboxes visibles...", flush=True)
+    # Corridas #5 y #6 (2026-08-08) probaron algo clave con el screenshot real: el
+    # filtro SÍ se aplica de verdad (la tabla de fondo ya mostraba agosto completo,
+    # con incentivos nuevos que no estaban en mayo) -- lo que nunca pasa es que el
+    # PANEL del dropdown se cierre solo, ni esperando 120s. No hay que esperar a que
+    # cierre; hay que cerrarlo (Escape), y seguir. El dato ya está bien desde el
+    # click en 'Aplicar'.
+    time.sleep(5)  # margen para que el click de Aplicar termine de procesar
+    try:
+        pagina.keyboard.press("Escape")
+    except Exception:
+        pass
+    time.sleep(1)
+    try:
+        # Si Escape no lo cerró, clickear en un área neutra (el título de la vista)
+        # como respaldo -- cualquiera de los dos saca el foco del popup.
+        if popup_scope.locator("input[type=checkbox]:visible").count() > 0:
+            pagina.mouse.click(50, 50)
+            time.sleep(1)
+    except Exception:
+        pass
     pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_tras_aplicar.png"))
-    if quedan != 0:
-        print("  el popup no cerró tras 120s -- se considera fallido.", flush=True)
-        return False
     return True
 
 
