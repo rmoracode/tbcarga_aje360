@@ -6,36 +6,46 @@ scripts/descargar.py (login usuario/clave + control de navegador real, porque el
 filtro de mes de estos workbooks no se puede mover por la API REST normal) —
 adaptado a este workbook, que es DISTINTO al de ventas.
 
-⚠️ SIN VERIFICAR contra el workbook real: nunca se ha corrido esto contra
-IncentivosComerciales en vivo (no hay credenciales disponibles fuera de GitHub
-Actions). Se reutiliza toda la lógica ya probada de descargar.py (login, ubicar el
-frame con checkboxes, exportar como CSV vía "Tabulación cruzada"), pero el nombre
-exacto del filtro de mes en ESTE workbook es una suposición razonable (misma
-convención que el resto de reportes de AJE sobre fecha_liquidacion), no un hecho
-confirmado. Si la primera corrida no encuentra el filtro esperado, el script
-imprime los textos reales de los checkboxes que sí encontró (mismo patrón
-diagnóstico de descargar.py) en vez de fallar a ciegas — de ahí se ajusta en un
-commit de una línea, no hay que rediseñar nada.
+✅ VERIFICADO contra el workbook real (2026-08-08, corrida #1): login y navegación
+funcionan, y la data confirma exactamente el esquema del plan (cod_cliente/cod_zona/
+cod_ruta/Sucursal/Segmento/cod_incentivo IC-xxxxxx/inc_acciones/inc_condiciones/
+Usos Incentivo/Importe Incentivo/% Incentivo). Lo que falló fue el selector de
+filtro: a diferencia de la vista de ventas (checkboxes), IncentivosComerciales usa
+filtros de UN SOLO VALOR tipo dropdown ("Mes, Año", "mundo", "Regiones", "Sucursal",
+"Zona", "Ruta", "Segmento", "Canal", "Marca") — confirmado con el screenshot de
+diagnóstico que dejó la corrida #1 (error_sin_filtros.png). Este archivo ya está
+adaptado a ese patrón (seleccionar_mes_dropdown), pero el selector exacto del popup
+de opciones SIGUE sin confirmar en vivo (no se puede inspeccionar el DOM real fuera
+de una corrida) — si falla, deja error_dropdown_no_encontrado.png + el texto de
+todo lo clickeable que encontró, mismo patrón diagnóstico que ya destrabó
+descargar.py en varias iteraciones.
+
+Al ser un dropdown de valor único (no checkboxes multi-select), no existe un
+"MES_A_DESMARCAR" acá: seleccionar el mes nuevo reemplaza al anterior automáticamente.
 
 Variables de entorno esperadas:
     TABLEAU_USER             usuario de Tableau (secret, el mismo de descargar.py)
     TABLEAU_PASSWORD         clave de Tableau (secret, el mismo de descargar.py)
-    MES_OBJETIVO             default: "agosto"
-    MES_A_DESMARCAR          default: "" (si vacío, no desmarca nada)
-    SALIDA_DIR               default: "./salida"
+    MES_OBJETIVO              default: "agosto"
+    SALIDA_DIR                default: "./salida"
 """
 import os
 import re
 import sys
 import time
-import urllib.parse
 
 RE_DESCARGAR = re.compile(r"Descargar|Download", re.IGNORECASE)
+# Detecta el valor ACTUAL del filtro (ej. "mayo de 2026") sin importar cuál mes esté
+# seleccionado al momento de correr -- eso es lo que hay que clickear para abrir el dropdown.
+RE_MES_ANIO_ACTUAL = re.compile(
+    r"(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|"
+    r"noviembre|diciembre)\s+de\s+\d{4}",
+    re.IGNORECASE,
+)
 
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
-MES_A_DESMARCAR = os.environ.get("MES_A_DESMARCAR", "")
 SALIDA_DIR = os.environ.get("SALIDA_DIR", "./salida")
 os.makedirs(SALIDA_DIR, exist_ok=True)
 
@@ -44,13 +54,6 @@ os.makedirs(SALIDA_DIR, exist_ok=True)
 # cod_incentivo/inc_acciones/inc_condiciones/Usos Incentivo/Importe Incentivo/% Incentivo).
 URL_VISTA = "https://bitableau.ajegroup.com/#/site/Cam/views/IncentivosComerciales/DetalleClienteIncentivo?:iid=1"
 URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
-
-MESES_EN = {
-    "enero": "January", "febrero": "February", "marzo": "March", "abril": "April",
-    "mayo": "May", "junio": "June", "julio": "July", "agosto": "August",
-    "septiembre": "September", "octubre": "October", "noviembre": "November",
-    "diciembre": "December",
-}
 
 
 def iniciar_sesion(pagina):
@@ -90,53 +93,46 @@ def iniciar_sesion(pagina):
     print("Sesion iniciada OK.", flush=True)
 
 
-def encontrar_frame_con_checkboxes(pagina, minimo=1, intentos=18, espera_s=10):
-    """minimo=1 (no >=10 como en ventas): IncentivosComerciales puede tener MENOS
-    meses con datos que la vista de ventas (los incentivos no necesariamente
-    corren desde febrero) — un umbral de 10 asumiría de más."""
-    anterior = -1
+def encontrar_frame_con_filtro_mes(pagina, intentos=18, espera_s=10):
+    """A diferencia de descargar.py (cuenta checkboxes), acá se busca el frame que
+    contenga el valor actual del filtro de mes (ej. 'mayo de 2026') -- confirmado
+    por screenshot que ese es el patrón real de esta vista (dropdown, no checkboxes)."""
     for i in range(intentos):
         time.sleep(espera_s)
-        mejor, mejor_n = None, 0
         for f in pagina.frames:
             try:
-                n = f.locator("input[type=checkbox]").count()
-                if n > mejor_n:
-                    mejor, mejor_n = f, n
+                if f.get_by_text(RE_MES_ANIO_ACTUAL).count() > 0:
+                    print(f"  {(i + 1) * espera_s}s -- frame de filtros encontrado", flush=True)
+                    return f
             except Exception:
                 pass
-        print(f"  {(i + 1) * espera_s}s -- mejor frame: {mejor_n} checkboxes", flush=True)
-        if mejor_n >= minimo and mejor_n == anterior:
-            return mejor
-        anterior = mejor_n
+        print(f"  {(i + 1) * espera_s}s -- todavía sin encontrar el filtro de mes", flush=True)
     return None
 
 
-def texto_de_checkbox(el) -> str:
-    return el.evaluate("""
-        e => {
-            let l = e.closest('label');
-            if (l) return l.innerText.trim();
-            let p = e.parentElement;
-            for (let k=0;k<4 && p;k++){ if(p.innerText && p.innerText.trim()) return p.innerText.trim().slice(0,60); p=p.parentElement; }
-            return '';
-        }
-    """)
+def seleccionar_mes_dropdown(pagina, fr, mes_es: str) -> bool:
+    """Clickea el valor actual del filtro 'Mes, Año' (abre el dropdown) y selecciona
+    la opción que contiene mes_es. El popup de opciones de Tableau a veces se
+    renderiza flotando sobre TODA la página (fuera del iframe del viz) y a veces
+    dentro del mismo frame -- se busca en ambos scopes."""
+    try:
+        trigger = fr.get_by_text(RE_MES_ANIO_ACTUAL).first
+        trigger.click(timeout=10000)
+    except Exception as e:
+        print(f"  no se pudo clickear el valor actual del filtro: {e}", flush=True)
+        return False
 
+    time.sleep(2)
+    pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_mes_abierto.png"))
 
-def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
-    candidatos = {texto_buscado, MESES_EN.get(texto_buscado.lower(), texto_buscado)}
-    for intento in range(reintentos):
+    for scope in (pagina, fr):
         try:
-            checks = fr.locator("input[type=checkbox]")
-            for i in range(checks.count()):
-                if texto_de_checkbox(checks.nth(i)) in candidatos:
-                    checks.nth(i).click(timeout=10000)
-                    return True
-            return False
-        except Exception as e:
-            print(f"    (reintento {intento + 1}/{reintentos} tras: {type(e).__name__})", flush=True)
-            time.sleep(2)
+            opcion = scope.get_by_text(mes_es, exact=False)
+            if opcion.count() > 0:
+                opcion.first.click(timeout=10000)
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -150,31 +146,32 @@ def main() -> int:
         print(f"Navegando: {URL_VISTA}", flush=True)
         pagina.goto(URL_VISTA, wait_until="domcontentloaded", timeout=60000)
 
-        print("Buscando el frame con los filtros...", flush=True)
-        fr = encontrar_frame_con_checkboxes(pagina)
+        print("Buscando el frame con el filtro de mes...", flush=True)
+        fr = encontrar_frame_con_filtro_mes(pagina)
         if fr is None:
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_sin_filtros.png"))
             if pagina.locator("text=/Nombre de usuario|Username/i").count() > 0:
                 raise SystemExit("La sesion parece haber vencido a mitad de la corrida (aparece pantalla de login).")
             raise SystemExit(
-                "No se encontraron checkboxes de filtro en esta vista -- ver error_sin_filtros.png. "
-                "Puede que IncentivosComerciales filtre distinto a Reportería_Comercial (ej. dropdown "
-                "en vez de checkboxes) -- si es así, este script necesita un selector distinto acá."
+                "No se encontró el filtro 'Mes, Año' (patrón 'agosto de 2026') en esta vista "
+                "-- ver error_sin_filtros.png. El layout puede haber cambiado."
             )
 
-        print(f"Marcando '{MES_OBJETIVO}'...", flush=True)
-        if not click_checkbox_por_texto(fr, MES_OBJETIVO):
-            checks = fr.locator("input[type=checkbox]")
-            textos = [texto_de_checkbox(checks.nth(i)) for i in range(checks.count())]
-            print("TEXTOS REALES de los checkboxes encontrados (para ajustar el filtro):", flush=True)
-            for i, t in enumerate(textos):
-                print(f"  [{i}] {t!r}", flush=True)
-            pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_checkbox_no_encontrado.png"))
-            raise SystemExit(f"No se encontro el checkbox de mes '{MES_OBJETIVO}' -- ver textos arriba")
+        print(f"Abriendo dropdown y marcando '{MES_OBJETIVO}'...", flush=True)
+        if not seleccionar_mes_dropdown(pagina, fr, MES_OBJETIVO):
+            pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_dropdown_no_encontrado.png"))
+            # Diagnóstico: todo el texto visible en la página + el frame, para ajustar
+            # el selector en un commit puntual en vez de adivinar a ciegas.
+            try:
+                print("TEXTO VISIBLE en la página (para ajustar el selector):", flush=True)
+                print(pagina.inner_text("body")[:3000], flush=True)
+            except Exception:
+                pass
+            raise SystemExit(
+                f"No se pudo seleccionar '{MES_OBJETIVO}' en el dropdown de mes "
+                "-- ver error_dropdown_no_encontrado.png y el texto arriba"
+            )
         time.sleep(2)
-        if MES_A_DESMARCAR:
-            print(f"Desmarcando '{MES_A_DESMARCAR}'...", flush=True)
-            click_checkbox_por_texto(fr, MES_A_DESMARCAR)
 
         print("Esperando 60s fijos a que la tabla recargue...", flush=True)
         time.sleep(60)
@@ -247,7 +244,7 @@ def main() -> int:
             return 0
 
         print("Click final, esperando el archivo...", flush=True)
-        with pagina.expect_download(timeout=90000) as info_descarga:
+        with pagina.expect_download(timeout=150000) as info_descarga:
             boton_final.click()
         descarga = info_descarga.value
         nombre = f"incentivos_{MES_OBJETIVO}.csv"
