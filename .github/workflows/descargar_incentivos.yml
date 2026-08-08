@@ -4,17 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       mes_objetivo:
-        description: "Mes a marcar (ej. agosto)"
+        description: "Mes a marcar (vacio = el mes en curso, calculado solo)"
         required: false
-        default: "agosto"
+        default: ""
       mes_a_desmarcar:
-        description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
+        description: "Mes actualmente marcado a desmarcar (vacio = el mes anterior, calculado solo)"
         required: false
-        default: "mayo"
-  schedule:
-    # 12:15 UTC = 06:15 Guatemala — 15 min despues del job de ventas
-    # (descargar.yml) para no pegarle a Tableau con dos logins simultaneos.
-    - cron: "15 12 * * *"
+        default: ""
+  # Dispara justo cuando TERMINA "Descargar DATA PARA ANALISIS (Tableau)" (el de
+  # ventas) -- ya no un cron a horario fijo (12:15 UTC, "15 min despues") que podia
+  # pisarlo si ventas se demoraba, o dejar un hueco muerto si terminaba antes. Corre
+  # sin importar si ventas tuvo exito o fallo (son fuentes de datos independientes;
+  # lo unico que importa acá es no loguearse a Tableau al mismo tiempo que ventas).
+  workflow_run:
+    workflows: ["Descargar DATA PARA ANALISIS (Tableau)"]
+    types: [completed]
 
 jobs:
   descargar:
@@ -33,12 +37,27 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      # Calcula el mes en curso (y el anterior) en español, en vez de tener
+      # "agosto"/"mayo" fijos en el YAML -- eso se rompería solo en septiembre.
+      # Solo se usa como fallback: si mes_objetivo vino explícito (workflow_dispatch
+      # manual), ese gana.
+      - name: Calcular mes en curso
+        id: mes
+        run: |
+          MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+          MES_NUM=$(date -u +%-m)
+          MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
+          MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
+          echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "previo=$MES_PREV" >> "$GITHUB_OUTPUT"
+          echo "Mes calculado: $MES_ACTUAL (anterior: $MES_PREV)"
+
       - name: Descargar vista de Incentivos
         env:
           TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
           TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
-          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo || 'agosto' }}
-          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar || 'mayo' }}
+          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar != '' && github.event.inputs.mes_a_desmarcar || steps.mes.outputs.previo }}
           SALIDA_DIR: ./salida
         run: python scripts/descargar_incentivos.py
 
@@ -46,7 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: incentivos-${{ github.event.inputs.mes_objetivo || 'agosto' }}
+          name: incentivos-${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
           path: salida/
           retention-days: 14
 
