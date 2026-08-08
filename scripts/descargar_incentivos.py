@@ -283,6 +283,75 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
     return True
 
 
+# Filtros que la vista trae preseleccionados a un valor puntual (no "(Todo)") por
+# defecto -- confirmado con una descarga real: sin resetear estos, el CSV sale
+# acotado a una sola ruta/zona en vez de traer TODO el país (plan: "la misma
+# cascada sucursal/zona/ruta/cliente" -- necesita el dato completo, no un recorte).
+FILTROS_A_RESETEAR = ["mundo", "Regiones", "Zona", "Ruta", "Canal"]
+
+
+def resetear_filtro_a_todo(pagina, fr, etiqueta: str) -> bool:
+    """Abre un filtro dropdown POR SU ETIQUETA (no por su valor actual, que puede
+    ser cualquier zona/ruta/región -- a diferencia del filtro de mes no hay un
+    patrón de texto conocido de antemano) y marca '(Todo)'."""
+    try:
+        label = fr.get_by_text(etiqueta, exact=True).first
+        box = label.bounding_box()
+        if box is None:
+            print(f"  '{etiqueta}': no se encontró la etiqueta.", flush=True)
+            return False
+        pagina.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] + 15)
+    except Exception as e:
+        print(f"  '{etiqueta}': no se pudo abrir ({e}).", flush=True)
+        return False
+
+    time.sleep(2)
+    popup_scope = None
+    for scope in (fr, pagina):
+        try:
+            if scope.locator("input[type=checkbox]:visible").count() > 0:
+                popup_scope = scope
+                break
+        except Exception:
+            pass
+    if popup_scope is None:
+        print(f"  '{etiqueta}': no se encontraron checkboxes al abrir -- puede que ya esté en (Todo).", flush=True)
+        try:
+            pagina.keyboard.press("Escape")
+        except Exception:
+            pass
+        return False
+
+    marcado = click_checkbox_conteniendo(popup_scope, "(Todo)", estado_deseado=True)
+    time.sleep(1)
+    if not marcado:
+        print(f"  '{etiqueta}': no tiene opción '(Todo)' -- se deja como está.", flush=True)
+        try:
+            pagina.keyboard.press("Escape")
+        except Exception:
+            pass
+        return False
+
+    aplicado = False
+    for scope in (popup_scope, pagina, fr):
+        try:
+            boton = scope.get_by_text("Aplicar", exact=True)
+            if boton.count() > 0:
+                click_con_fallback(boton.first)
+                aplicado = True
+                break
+        except Exception:
+            pass
+    time.sleep(4)
+    try:
+        pagina.keyboard.press("Escape")
+    except Exception:
+        pass
+    time.sleep(1)
+    print(f"  '{etiqueta}' reseteado a (Todo): aplicado={aplicado}", flush=True)
+    return aplicado
+
+
 def main() -> int:
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
@@ -319,6 +388,11 @@ def main() -> int:
                 "-- ver error_dropdown_no_encontrado.png y el texto arriba"
             )
         time.sleep(2)
+
+        print("Reseteando filtros de región/zona/ruta/canal a '(Todo)' (sin esto el CSV sale acotado a una sola ruta)...", flush=True)
+        for etiqueta in FILTROS_A_RESETEAR:
+            resetear_filtro_a_todo(pagina, fr, etiqueta)
+        pagina.screenshot(path=os.path.join(SALIDA_DIR, "filtros_reseteados.png"))
 
         print("Esperando a que la tabla recargue y el overlay de carga desaparezca...", flush=True)
         # Corridas #2 y #3 (2026-08-08) mostraron que 60s + una sola espera de 30s
