@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mes_objetivo:
-        description: "Mes a seleccionar en el dropdown (ej. agosto)"
+        description: "Mes a marcar (ej. agosto)"
         required: false
         default: "agosto"
+      mes_a_desmarcar:
+        description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
+        required: false
+        default: "mayo"
   schedule:
     # 12:15 UTC = 06:15 Guatemala — 15 min despues del job de ventas
     # (descargar.yml) para no pegarle a Tableau con dos logins simultaneos.
@@ -34,6 +38,7 @@ jobs:
           TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
           TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
           MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo || 'agosto' }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar || 'mayo' }}
           SALIDA_DIR: ./salida
         run: python scripts/descargar_incentivos.py
 

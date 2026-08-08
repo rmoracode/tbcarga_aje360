@@ -20,13 +20,15 @@ de una corrida) — si falla, deja error_dropdown_no_encontrado.png + el texto d
 todo lo clickeable que encontró, mismo patrón diagnóstico que ya destrabó
 descargar.py en varias iteraciones.
 
-Al ser un dropdown de valor único (no checkboxes multi-select), no existe un
-"MES_A_DESMARCAR" acá: seleccionar el mes nuevo reemplaza al anterior automáticamente.
+Corrección sobre la primera corrida (run #2, 2026-08-08): el dropdown, al abrirse,
+resultó ser la MISMA lista de checkboxes que la vista de ventas (no un selector de
+valor único) -- así que MES_A_DESMARCAR sí aplica, igual que en descargar.py.
 
 Variables de entorno esperadas:
     TABLEAU_USER             usuario de Tableau (secret, el mismo de descargar.py)
     TABLEAU_PASSWORD         clave de Tableau (secret, el mismo de descargar.py)
     MES_OBJETIVO              default: "agosto"
+    MES_A_DESMARCAR           default: "" (si vacío, no desmarca nada)
     SALIDA_DIR                default: "./salida"
 """
 import os
@@ -46,6 +48,7 @@ RE_MES_ANIO_ACTUAL = re.compile(
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
+MES_A_DESMARCAR = os.environ.get("MES_A_DESMARCAR", "")
 SALIDA_DIR = os.environ.get("SALIDA_DIR", "./salida")
 os.makedirs(SALIDA_DIR, exist_ok=True)
 
@@ -110,11 +113,43 @@ def encontrar_frame_con_filtro_mes(pagina, intentos=18, espera_s=10):
     return None
 
 
-def seleccionar_mes_dropdown(pagina, fr, mes_es: str) -> bool:
-    """Clickea el valor actual del filtro 'Mes, Año' (abre el dropdown) y selecciona
-    la opción que contiene mes_es. El popup de opciones de Tableau a veces se
-    renderiza flotando sobre TODA la página (fuera del iframe del viz) y a veces
-    dentro del mismo frame -- se busca en ambos scopes."""
+def texto_de_checkbox(el) -> str:
+    return el.evaluate("""
+        e => {
+            let l = e.closest('label');
+            if (l) return l.innerText.trim();
+            let p = e.parentElement;
+            for (let k=0;k<4 && p;k++){ if(p.innerText && p.innerText.trim()) return p.innerText.trim().slice(0,60); p=p.parentElement; }
+            return '';
+        }
+    """)
+
+
+def click_checkbox_conteniendo(scope, texto_buscado: str, reintentos=3) -> bool:
+    """Igual que click_checkbox_por_texto de descargar.py, pero por SUBSTRING (acá
+    la etiqueta es 'agosto de 2026', no solo 'agosto')."""
+    for intento in range(reintentos):
+        try:
+            checks = scope.locator("input[type=checkbox]")
+            for i in range(checks.count()):
+                if texto_buscado.lower() in texto_de_checkbox(checks.nth(i)).lower():
+                    checks.nth(i).click(timeout=10000)
+                    return True
+            return False
+        except Exception as e:
+            print(f"    (reintento {intento + 1}/{reintentos} tras: {type(e).__name__})", flush=True)
+            time.sleep(2)
+    return False
+
+
+def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str) -> bool:
+    """El filtro 'Mes, Año' es un dropdown COLAPSADO que, al abrirse, muestra la
+    MISMA lista de checkboxes que la vista de ventas (confirmado por screenshot:
+    '(Todo)', 'mayo de 2026' ✓, 'junio de 2026', 'julio de 2026', 'agosto de 2026',
+    más los botones 'Cancelar'/'Aplicar'). La corrida anterior clickeaba el TEXTO de
+    la opción en vez de su checkbox -- no marcaba nada y el popup se quedaba abierto
+    bloqueando todo lo demás (el 'tab-glass' que interceptó el click de 'Descargar').
+    Acá se usan checkboxes reales + se confirma con 'Aplicar'."""
     try:
         trigger = fr.get_by_text(RE_MES_ANIO_ACTUAL).first
         trigger.click(timeout=10000)
@@ -125,15 +160,40 @@ def seleccionar_mes_dropdown(pagina, fr, mes_es: str) -> bool:
     time.sleep(2)
     pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_mes_abierto.png"))
 
-    for scope in (pagina, fr):
+    popup_scope = None
+    for scope in (fr, pagina):
         try:
-            opcion = scope.get_by_text(mes_es, exact=False)
-            if opcion.count() > 0:
-                opcion.first.click(timeout=10000)
-                return True
+            if scope.locator("input[type=checkbox]").count() > 0:
+                popup_scope = scope
+                break
         except Exception:
             pass
-    return False
+    if popup_scope is None:
+        return False
+
+    marcado = click_checkbox_conteniendo(popup_scope, mes_objetivo)
+    if not marcado:
+        return False
+    time.sleep(1)
+    if mes_a_desmarcar:
+        click_checkbox_conteniendo(popup_scope, mes_a_desmarcar)
+        time.sleep(1)
+
+    pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_mes_marcado.png"))
+
+    aplicado = False
+    for scope in (popup_scope, pagina, fr):
+        try:
+            boton = scope.get_by_text("Aplicar", exact=True)
+            if boton.count() > 0:
+                boton.first.click(timeout=5000)
+                aplicado = True
+                break
+        except Exception:
+            pass
+    if not aplicado:
+        print("  no se encontró el botón 'Aplicar' -- se sigue de todas formas.", flush=True)
+    return True
 
 
 def main() -> int:
@@ -158,7 +218,7 @@ def main() -> int:
             )
 
         print(f"Abriendo dropdown y marcando '{MES_OBJETIVO}'...", flush=True)
-        if not seleccionar_mes_dropdown(pagina, fr, MES_OBJETIVO):
+        if not seleccionar_mes_dropdown(pagina, fr, MES_OBJETIVO, MES_A_DESMARCAR):
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_dropdown_no_encontrado.png"))
             # Diagnóstico: todo el texto visible en la página + el frame, para ajustar
             # el selector en un commit puntual en vez de adivinar a ciegas.
@@ -175,6 +235,18 @@ def main() -> int:
 
         print("Esperando 60s fijos a que la tabla recargue...", flush=True)
         time.sleep(60)
+        # Defensa extra: si el overlay de carga de Tableau ('tab-glass') sigue
+        # visible, esperar hasta que desaparezca antes de clickear nada más -- fue
+        # justo ese overlay el que interceptó el click de 'Descargar' en la corrida
+        # anterior (el popup del filtro había quedado abierto de fondo).
+        try:
+            for f in pagina.frames:
+                glass = f.locator(".tab-glass")
+                if glass.count() > 0:
+                    print("  overlay de carga detectado, esperando a que desaparezca...", flush=True)
+                    glass.first.wait_for(state="hidden", timeout=30000)
+        except Exception:
+            pass
         pagina.screenshot(path=os.path.join(SALIDA_DIR, "antes_de_descargar.png"))
 
         mejor, mejor_n = None, 0
