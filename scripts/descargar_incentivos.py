@@ -348,6 +348,16 @@ def resetear_filtro_a_todo(pagina, fr, etiqueta: str) -> bool:
     except Exception:
         pass
     time.sleep(1)
+    # Mismo respaldo que seleccionar_mes_dropdown: si Escape no alcanzó, un click en
+    # área neutra -- corrida #9 (2026-08-08) mostró que dejar un popup de estos sin
+    # cerrar del todo termina bloqueando el click de 'Descargar' varios pasos después
+    # (mismo overlay 'tab-glass' de siempre).
+    try:
+        if popup_scope.locator("input[type=checkbox]:visible").count() > 0:
+            pagina.mouse.click(50, 50)
+            time.sleep(1)
+    except Exception:
+        pass
     print(f"  '{etiqueta}' reseteado a (Todo): aplicado={aplicado}", flush=True)
     return aplicado
 
