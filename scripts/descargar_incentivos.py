@@ -234,18 +234,25 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_sin_aplicar.png"))
         return False
 
-    time.sleep(2)
-    # Confirmar que el popup de verdad cerró -- si sigue habiendo checkboxes
-    # visibles acá, 'Aplicar' no funcionó y seguir adelante solo repetiría el
-    # bloqueo por 'tab-glass' que ya se vio en corridas anteriores.
-    try:
-        quedan = popup_scope.locator("input[type=checkbox]:visible").count()
-    except Exception:
-        quedan = -1
-    print(f"  checkboxes visibles tras 'Aplicar': {quedan}", flush=True)
+    # Confirmar que el popup de verdad cerró. Corrida #5 (2026-08-08) probó que el
+    # click en 'Aplicar' SÍ funciona -- el screenshot mostró agosto marcado y mayo
+    # desmarcado correctamente -- pero solo se esperaban 2s antes de revisar, y esta
+    # vista ya demostró tardar minutos en reaccionar a un cambio de filtro (la tabla
+    # principal tarda >180s). Se sondea de verdad en vez de una espera corta fija.
+    quedan = -1
+    for i in range(24):  # 24 x 5s = 120s tope
+        time.sleep(5)
+        try:
+            quedan = popup_scope.locator("input[type=checkbox]:visible").count()
+        except Exception:
+            quedan = -1
+        if quedan == 0:
+            print(f"  {(i + 1) * 5}s -- popup cerrado.", flush=True)
+            break
+        print(f"  {(i + 1) * 5}s -- todavía {quedan} checkboxes visibles...", flush=True)
     pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_tras_aplicar.png"))
-    if quedan > 0:
-        print("  el popup no cerró -- se considera fallido.", flush=True)
+    if quedan != 0:
+        print("  el popup no cerró tras 120s -- se considera fallido.", flush=True)
         return False
     return True
 
