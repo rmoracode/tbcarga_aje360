@@ -137,14 +137,23 @@ def texto_de_checkbox(el) -> str:
     """)
 
 
-def click_checkbox_conteniendo(scope, texto_buscado: str, reintentos=3) -> bool:
+def click_checkbox_conteniendo(scope, texto_buscado: str, estado_deseado: bool = None, reintentos=3) -> bool:
     """Igual que click_checkbox_por_texto de descargar.py, pero por SUBSTRING (acá
-    la etiqueta es 'agosto de 2026', no solo 'agosto')."""
+    la etiqueta es 'agosto de 2026', no solo 'agosto').
+
+    estado_deseado: si se indica, NO clickea si el checkbox ya está en ese estado --
+    corridas para bajar varios meses seguidos (backfill histórico) usan la misma
+    cuenta de Tableau una tras otra, y no está confirmado si el servidor recuerda la
+    última selección entre sesiones. Clickear a ciegas un checkbox que ya está en el
+    estado que se quiere (ej. 'desmarcar mayo' cuando mayo ya estaba desmarcado)
+    haría lo contrario -- lo marcaría, dejando dos meses seleccionados a la vez."""
     for intento in range(reintentos):
         try:
             checks = scope.locator("input[type=checkbox]")
             for i in range(checks.count()):
                 if texto_buscado.lower() in texto_de_checkbox(checks.nth(i)).lower():
+                    if estado_deseado is not None and checks.nth(i).is_checked() == estado_deseado:
+                        return True  # ya está como se quiere, no tocar
                     checks.nth(i).click(timeout=10000)
                     return True
             return False
@@ -192,7 +201,7 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         except Exception as e:
             print(f"    [{i}] (no se pudo leer: {e})", flush=True)
 
-    click_checkbox_conteniendo(popup_scope, mes_objetivo)
+    click_checkbox_conteniendo(popup_scope, mes_objetivo, estado_deseado=True)
     time.sleep(1)
     # Corridas anteriores asumían éxito solo porque el click no reventó -- acá se
     # RELEE el estado real del checkbox después de clickear, en vez de confiar en
@@ -210,8 +219,24 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         return False
 
     if mes_a_desmarcar:
-        click_checkbox_conteniendo(popup_scope, mes_a_desmarcar)
+        click_checkbox_conteniendo(popup_scope, mes_a_desmarcar, estado_deseado=False)
         time.sleep(1)
+
+    # Desmarcar cualquier OTRO mes que haya quedado marcado -- no solo mes_a_desmarcar.
+    # Backfill histórico dispara varias corridas seguidas con la misma cuenta de
+    # Tableau; si el servidor recuerda selecciones de una corrida a otra, un solo
+    # mes_a_desmarcar fijo no alcanza para limpiar selecciones más viejas.
+    for i in range(checks.count()):
+        try:
+            texto = texto_de_checkbox(checks.nth(i))
+            if texto.lower() == "(todo)" or mes_objetivo.lower() in texto.lower():
+                continue
+            if checks.nth(i).is_checked():
+                print(f"  desmarcando mes viejo encontrado: {texto!r}", flush=True)
+                checks.nth(i).click(timeout=10000)
+                time.sleep(1)
+        except Exception:
+            pass
 
     pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_mes_marcado.png"))
 
