@@ -181,12 +181,34 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         except Exception:
             pass
     if popup_scope is None:
+        print("  no se encontraron checkboxes en el popup abierto.", flush=True)
         return False
 
-    marcado = click_checkbox_conteniendo(popup_scope, mes_objetivo)
-    if not marcado:
-        return False
+    checks = popup_scope.locator("input[type=checkbox]")
+    print(f"  {checks.count()} checkboxes en el popup:", flush=True)
+    for i in range(checks.count()):
+        try:
+            print(f"    [{i}] {texto_de_checkbox(checks.nth(i))!r} checked={checks.nth(i).is_checked()}", flush=True)
+        except Exception as e:
+            print(f"    [{i}] (no se pudo leer: {e})", flush=True)
+
+    click_checkbox_conteniendo(popup_scope, mes_objetivo)
     time.sleep(1)
+    # Corridas anteriores asumían éxito solo porque el click no reventó -- acá se
+    # RELEE el estado real del checkbox después de clickear, en vez de confiar en
+    # que click() sin excepción significa que de verdad quedó marcado.
+    objetivo_marcado = False
+    for i in range(checks.count()):
+        try:
+            if mes_objetivo.lower() in texto_de_checkbox(checks.nth(i)).lower():
+                objetivo_marcado = checks.nth(i).is_checked()
+        except Exception:
+            pass
+    print(f"  '{mes_objetivo}' quedó marcado: {objetivo_marcado}", flush=True)
+    if not objetivo_marcado:
+        pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_checkbox_no_marco.png"))
+        return False
+
     if mes_a_desmarcar:
         click_checkbox_conteniendo(popup_scope, mes_a_desmarcar)
         time.sleep(1)
@@ -198,13 +220,33 @@ def seleccionar_mes_dropdown(pagina, fr, mes_objetivo: str, mes_a_desmarcar: str
         try:
             boton = scope.get_by_text("Aplicar", exact=True)
             if boton.count() > 0:
-                boton.first.click(timeout=5000)
+                try:
+                    print(f"  botón 'Aplicar' encontrado, disabled={boton.first.is_disabled()}", flush=True)
+                except Exception:
+                    pass
+                click_con_fallback(boton.first)
                 aplicado = True
                 break
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  error buscando 'Aplicar': {e}", flush=True)
     if not aplicado:
-        print("  no se encontró el botón 'Aplicar' -- se sigue de todas formas.", flush=True)
+        print("  no se encontró el botón 'Aplicar'.", flush=True)
+        pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_sin_aplicar.png"))
+        return False
+
+    time.sleep(2)
+    # Confirmar que el popup de verdad cerró -- si sigue habiendo checkboxes
+    # visibles acá, 'Aplicar' no funcionó y seguir adelante solo repetiría el
+    # bloqueo por 'tab-glass' que ya se vio en corridas anteriores.
+    try:
+        quedan = popup_scope.locator("input[type=checkbox]:visible").count()
+    except Exception:
+        quedan = -1
+    print(f"  checkboxes visibles tras 'Aplicar': {quedan}", flush=True)
+    pagina.screenshot(path=os.path.join(SALIDA_DIR, "dropdown_tras_aplicar.png"))
+    if quedan > 0:
+        print("  el popup no cerró -- se considera fallido.", flush=True)
+        return False
     return True
 
 
