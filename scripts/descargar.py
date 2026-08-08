@@ -278,16 +278,28 @@ def main() -> int:
             # centros de distribucion/plantas, no puntos de venta). No es un
             # error: no hay nada que descargar para esa sucursal ese mes. Se
             # sale limpio (exit 0) en vez de reventar con un timeout confuso.
+            #
+            # Se deja un marcador en SALIDA_DIR (no solo el print): sin esto,
+            # el workflow no podia distinguir "confirmado sin datos" de "el job
+            # crasheo antes de llegar aca" -- ambos casos terminaban sin ningun
+            # CSV, y combinar.py no tenia forma de saber cual de los dos paso.
             if boton_final.is_disabled():
                 print(f"SIN DATOS -- '{SUCURSAL}' no tiene filas para "
                       f"{MES_OBJETIVO} en canal TRADICIONAL (botón deshabilitado, "
                       f"tabulación cruzada vacía). No es un error.", flush=True)
+                marcador = os.path.join(SALIDA_DIR, f"SIN_DATOS_{SUCURSAL.replace(' ', '_')}.marker")
+                open(marcador, "w").close()
                 contexto.close()
                 navegador.close()
                 return 0
 
+            # 150s (antes 90s): bajo carga de 10 sesiones simultaneas se vio a
+            # Tableau tardar mas en disparar la descarga y el timeout de 90s se
+            # cumplia justo antes de que llegara -- el reintento serial
+            # (.github/workflows/descargar.yml, job reintentar_faltantes) es la
+            # red de seguridad real, esto solo reduce cuantas veces hace falta.
             print("Click final, esperando el archivo...", flush=True)
-            with pagina.expect_download(timeout=90000) as info_descarga:
+            with pagina.expect_download(timeout=150000) as info_descarga:
                 boton_final.click()
             descarga = info_descarga.value
             nombre = f"{MES_OBJETIVO}_{SUCURSAL.replace(' ', '_')}.csv"
