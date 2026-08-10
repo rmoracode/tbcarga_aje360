@@ -163,6 +163,31 @@ def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
     return False
 
 
+def estado_de_meses(fr, mes_objetivo: str) -> tuple[bool, list[str]]:
+    """(mes_objetivo quedó marcado?, lista de OTROS meses que quedaron marcados).
+    A diferencia de click_checkbox_por_texto (que solo confirma que ENCONTRÓ y
+    CLICKEÓ un checkbox, no que el click surtió el efecto esperado), esto LEE
+    el estado real (is_checked()) de cada checkbox después del click -- la única
+    forma de detectar un click que no se aplicó a tiempo."""
+    candidatos_objetivo = {mes_objetivo, MESES_EN.get(mes_objetivo.lower(), mes_objetivo)}
+    objetivo_marcado = False
+    otros_marcados = []
+    checks = fr.locator("input[type=checkbox]")
+    for i in range(checks.count()):
+        el = checks.nth(i)
+        try:
+            if not el.is_checked():
+                continue
+        except Exception:
+            continue
+        texto = texto_de_checkbox(el)
+        if texto in candidatos_objetivo:
+            objetivo_marcado = True
+        elif texto:
+            otros_marcados.append(texto)
+    return objetivo_marcado, otros_marcados
+
+
 def main() -> int:
     with sync_playwright() as p:
         if True:  # (bloque conservado para no re-indentar todo el cuerpo)
@@ -210,6 +235,40 @@ def main() -> int:
             if MES_A_DESMARCAR:
                 print(f"Desmarcando '{MES_A_DESMARCAR}'...", flush=True)
                 click_checkbox_por_texto(fr, MES_A_DESMARCAR)
+            time.sleep(2)
+
+            # Verificacion real de estado (no solo "se encontro y se clickeo"):
+            # 2026-08-09 se detecto que 3/10 sucursales (las de mayor volumen,
+            # con render mas lento) terminaban con MES_A_DESMARCAR todavia
+            # marcado ademas del objetivo -- el click se registraba pero no
+            # alcanzaba a aplicarse antes de leer el estado. Sin esto, la
+            # tabulacion cruzada sale con DOS meses mezclados y nadie se entera
+            # hasta que alguien audita los datos a mano. Se reintenta desmarcar
+            # cualquier mes extra (no solo MES_A_DESMARCAR) hasta 4 veces con
+            # espera creciente; si sigue sucio, se aborta con SystemExit --
+            # eso deja esta sucursal SIN csv, que reintentar_faltantes
+            # (descargar.yml) recoge y reintenta automaticamente en vez de
+            # subir un archivo con datos incorrectos.
+            for intento_verif in range(4):
+                objetivo_ok, extras = estado_de_meses(fr, MES_OBJETIVO)
+                if objetivo_ok and not extras:
+                    print(f"Filtro de mes verificado limpio: solo '{MES_OBJETIVO}' marcado.", flush=True)
+                    break
+                print(f"  verificacion {intento_verif+1}/4: objetivo_marcado={objetivo_ok} "
+                      f"extras_marcados={extras}", flush=True)
+                if not objetivo_ok:
+                    click_checkbox_por_texto(fr, MES_OBJETIVO)
+                for extra in extras:
+                    click_checkbox_por_texto(fr, extra)
+                time.sleep(5 * (intento_verif + 1))
+            else:
+                objetivo_ok, extras = estado_de_meses(fr, MES_OBJETIVO)
+                pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_filtro_mes_sucio.png"))
+                raise SystemExit(
+                    f"Filtro de mes no quedo limpio tras 4 intentos -- objetivo_marcado={objetivo_ok} "
+                    f"extras_todavia_marcados={extras}. Se aborta sin descargar (mejor sin csv que con "
+                    f"datos de mas de un mes mezclados) -- reintentar_faltantes lo reintenta solo."
+                )
 
             print("Esperando 60s fijos a que la tabla recargue...", flush=True)
             time.sleep(60)

@@ -52,13 +52,27 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Calcular mes en curso
+        # Antes el mes/mes-a-desmarcar en corridas de cron (sin inputs) caían al
+        # fallback hardcodeado 'agosto'/'mayo' -- correcto hoy por coincidencia,
+        # pero se habría roto en silencio en septiembre (mismo patrón ya
+        # arreglado en descargar_incentivos.yml, esto se le había quedado atrás).
+        id: mes
+        run: |
+          MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+          MES_NUM=$(date -u +%-m)
+          MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
+          MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
+          echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "previo=$MES_PREV" >> "$GITHUB_OUTPUT"
+
       - name: Descargar vista de Tableau
         env:
           TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
           TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
           SUCURSAL: ${{ matrix.sucursal }}
-          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo || 'agosto' }}
-          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar || 'mayo' }}
+          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar != '' && github.event.inputs.mes_a_desmarcar || steps.mes.outputs.previo }}
           SALIDA_DIR: ./salida
         run: python scripts/descargar.py
 
@@ -116,13 +130,23 @@ jobs:
                   f.write(s + "\n")
           PYEOF
 
+      - name: Calcular mes en curso
+        id: mes
+        run: |
+          MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+          MES_NUM=$(date -u +%-m)
+          MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
+          MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
+          echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "previo=$MES_PREV" >> "$GITHUB_OUTPUT"
+
       - name: Reintentar cada sucursal faltante (serial, timeout ampliado)
         if: hashFiles('faltantes.txt') != ''
         env:
           TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
           TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
-          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo || 'agosto' }}
-          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar || 'mayo' }}
+          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar != '' && github.event.inputs.mes_a_desmarcar || steps.mes.outputs.previo }}
           SALIDA_DIR: ./salida_retry
         run: |
           if [ ! -s faltantes.txt ]; then
@@ -168,10 +192,28 @@ jobs:
       - name: Instalar pandas
         run: pip install pandas
 
-      - name: Combinar en un solo archivo (valida completitud primero)
+      - name: Calcular mes en curso
+        id: mes
+        run: |
+          MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+          MES_NUM=$(date -u +%-m)
+          ANIO=$(date -u +%Y)
+          MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
+          echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "anio=$ANIO" >> "$GITHUB_OUTPUT"
+
+      - name: Combinar en un solo archivo (valida completitud + filtra mes mezclado)
+        id: combinar
+        env:
+          MES: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          ANIO: ${{ steps.mes.outputs.anio }}
         run: |
           mkdir -p combinado
-          python scripts/combinar.py todos/ "combinado/${{ github.event.inputs.mes_objetivo || 'agosto' }}_2026_todas_sucursales.csv" --esperadas
+          python scripts/combinar.py todos/ "combinado/${MES}_${ANIO}_todas_sucursales.csv" \
+            --esperadas --mes-objetivo "${MES} de ${ANIO}" | tee combinar.log
+          if grep -q "⚠ RESUMEN" combinar.log; then
+            echo "sucias=si" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Alertar por Telegram si quedó incompleto
         if: failure()
@@ -189,9 +231,24 @@ jobs:
           from combinar import validar_completo
           print(', '.join(validar_completo('todos')) or 'desconocido')
           ")
-          MES="${{ github.event.inputs.mes_objetivo || 'agosto' }}"
+          MES="${{ github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}"
           URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TEXTO="⚠️ tbcarga_aje360: el acumulado de ${MES} quedó INCOMPLETO tras reintentar. Faltan: ${FALTANTES}. NO se subió nada a Drive -- se conserva el archivo del día anterior. Ver: ${URL}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${ADMIN_CHAT_ID}" \
+            --data-urlencode text="${TEXTO}" > /dev/null
+
+      - name: Avisar por Telegram si se auto-corrigió un mes mezclado (no bloquea)
+        if: steps.combinar.outputs.sucias == 'si'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$ADMIN_CHAT_ID" ]; then
+            exit 0
+          fi
+          URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXTO="ℹ️ tbcarga_aje360: alguna sucursal trajo el CSV con meses mezclados -- se descartaron esas filas automáticamente y el archivo subido a Drive quedó correcto. Si se repite seguido, revisar scripts/descargar.py. Log: ${URL}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${ADMIN_CHAT_ID}" \
             --data-urlencode text="${TEXTO}" > /dev/null
@@ -199,7 +256,7 @@ jobs:
       - name: Subir combinado como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agosto-combinado
+          name: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}-combinado
           path: combinado/
 
       - name: Instalar rclone
