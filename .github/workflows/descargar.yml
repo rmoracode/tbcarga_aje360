@@ -11,10 +11,14 @@ on:
         description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
         required: false
         default: "mayo"
-  schedule:
-    # 12:00 UTC = 06:00 Guatemala (UTC-6). Corre las 10 sucursales + combina +
-    # sube a Drive automaticamente, sin que nadie lo dispare.
-    - cron: "0 12 * * *"
+  # Sin `schedule:` a propósito (2026-08-09): antes corría por su propio cron a las
+  # 06:00 GT Y por el disparo del sincronizador de ajecam360 (servicios/
+  # sincronizador_datos.py, ~05:30 GT) -- dos disparos casi seguidos duplicaban la
+  # carga de 10 sesiones simultáneas sobre Tableau, justo lo que causó el bug de
+  # datos mezclados ese día. Ahora ajecam360 es el único disparador: dispara, ESPERA,
+  # VALIDA, y reintenta hasta 3 veces si algo sale mal -- un cron ciego no podía hacer
+  # nada de eso. Si ajecam360 llegara a estar caído, disparar manual acá
+  # (workflow_dispatch) sigue funcionando igual.
 
 jobs:
   setup:
