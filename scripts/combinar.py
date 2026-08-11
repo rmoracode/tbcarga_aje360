@@ -36,11 +36,15 @@ import pandas as pd
 from sucursales import SUCURSALES
 
 
+def _tiene_csv(carpeta: str, sucursal: str) -> bool:
+    slug = sucursal.replace(" ", "_")
+    return bool(glob.glob(os.path.join(carpeta, "**", f"*{slug}*.csv"), recursive=True))
+
+
 def _sucursal_resuelta(carpeta: str, sucursal: str) -> bool:
     slug = sucursal.replace(" ", "_")
-    tiene_csv = bool(glob.glob(os.path.join(carpeta, "**", f"*{slug}*.csv"), recursive=True))
     tiene_marcador = bool(glob.glob(os.path.join(carpeta, "**", f"SIN_DATOS_{slug}.marker"), recursive=True))
-    return tiene_csv or tiene_marcador
+    return _tiene_csv(carpeta, sucursal) or tiene_marcador
 
 
 def validar_completo(carpeta: str) -> list[str]:
@@ -83,6 +87,19 @@ def main() -> int:
                 print(f"  - {s}")
             raise SystemExit(
                 f"Combinado incompleto -- no se sube nada. Faltan: {', '.join(faltantes)}"
+            )
+        # Cero tolerancia a "todas resolvieron por marker": que las N sucursales
+        # queden SIN_DATOS el mismo día es estadísticamente casi imposible en
+        # operación normal y casi siempre significa que algo aguas arriba
+        # (típicamente el filtro de año/mes en Tableau, ver scripts/descargar.py)
+        # quedó mal aplicado para todas por igual -- no que de verdad no hubo
+        # ventas en ninguna sucursal (visto 2026-08-11: año del filtro en blanco).
+        sin_csv_real = [s for s in SUCURSALES if not _tiene_csv(carpeta, s)]
+        if len(sin_csv_real) == len(SUCURSALES):
+            raise SystemExit(
+                f"Las {len(SUCURSALES)} sucursales resolvieron solo con marker 'SIN_DATOS' -- cero CSV "
+                f"real en NINGUNA. Esto casi nunca es real, es señal de un filtro mal aplicado aguas "
+                f"arriba (ver scripts/descargar.py). No se sube nada -- revisar antes de reintentar a ciegas."
             )
         print(f"Completo: las {len(SUCURSALES)} sucursales tienen CSV o marker de sin-datos.")
 

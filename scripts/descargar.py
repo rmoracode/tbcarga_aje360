@@ -17,6 +17,7 @@ Variables de entorno esperadas:
     SUCURSAL                default: "AJEMAYA SUCURSAL BARBERENA"
     MES_OBJETIVO             default: "agosto"
     MES_A_DESMARCAR          default: "" (si vacio, no desmarca nada)
+    ANIO_OBJETIVO            default: año actual UTC
     SALIDA_DIR               default: "./salida"
 """
 import json
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from datetime import datetime, timezone
 
 # Con la UI en ingles (visto en el runner de CI) 'Descargar' aparece como
 # 'Download' -- se busca con este patron en vez de texto exacto en espanol.
@@ -36,6 +38,7 @@ from playwright.sync_api import sync_playwright
 SUCURSAL = os.environ.get("SUCURSAL", "AJEMAYA SUCURSAL BARBERENA")
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
 MES_A_DESMARCAR = os.environ.get("MES_A_DESMARCAR", "")
+ANIO_OBJETIVO = os.environ.get("ANIO_OBJETIVO") or str(datetime.now(timezone.utc).year)
 SALIDA_DIR = os.environ.get("SALIDA_DIR", "./salida")
 os.makedirs(SALIDA_DIR, exist_ok=True)
 
@@ -143,6 +146,7 @@ MESES_EN = {
     "septiembre": "September", "octubre": "October", "noviembre": "November",
     "diciembre": "December",
 }
+MESES_LISTA = set(MESES_EN.keys()) | {v.lower() for v in MESES_EN.values()}
 
 
 def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
@@ -164,11 +168,19 @@ def click_checkbox_por_texto(fr, texto_buscado, reintentos=3):
 
 
 def estado_de_meses(fr, mes_objetivo: str) -> tuple[bool, list[str]]:
-    """(mes_objetivo quedó marcado?, lista de OTROS meses que quedaron marcados).
+    """(mes_objetivo quedó marcado?, lista de OTROS MESES que quedaron marcados).
     A diferencia de click_checkbox_por_texto (que solo confirma que ENCONTRÓ y
     CLICKEÓ un checkbox, no que el click surtió el efecto esperado), esto LEE
     el estado real (is_checked()) de cada checkbox después del click -- la única
-    forma de detectar un click que no se aplicó a tiempo."""
+    forma de detectar un click que no se aplicó a tiempo.
+
+    Solo cuenta como "otro marcado" un checkbox cuyo texto es un nombre de mes
+    (MESES_LISTA) -- 2026-08-11 se detectó que, sin este filtro, el checkbox de
+    AÑO (ej. '2026', mismo frame/lista que el de Mes) se colaba acá como "extra"
+    y el loop de limpieza en main() lo desmarcaba pensando que era un mes
+    sobrante. Eso dejaba el filtro de Año vacío y la tabulación cruzada salía
+    vacía para TODAS las sucursales por igual, sin ningún error visible (ver la
+    verificación de año en main())."""
     candidatos_objetivo = {mes_objetivo, MESES_EN.get(mes_objetivo.lower(), mes_objetivo)}
     objetivo_marcado = False
     otros_marcados = []
@@ -183,9 +195,27 @@ def estado_de_meses(fr, mes_objetivo: str) -> tuple[bool, list[str]]:
         texto = texto_de_checkbox(el)
         if texto in candidatos_objetivo:
             objetivo_marcado = True
-        elif texto:
+        elif texto.lower() in MESES_LISTA:
             otros_marcados.append(texto)
     return objetivo_marcado, otros_marcados
+
+
+def estado_de_anio(fr, anio_objetivo: str) -> bool:
+    """True si el checkbox de ANIO_OBJETIVO (ej. '2026') está marcado. No hace
+    falta "desmarcar otros años" como con el mes -- el dato ya viene acotado
+    por el filtro de mes, así que un año de más marcado no mezcla períodos;
+    lo único que importa es que el año correcto SÍ esté marcado."""
+    checks = fr.locator("input[type=checkbox]")
+    for i in range(checks.count()):
+        el = checks.nth(i)
+        try:
+            if not el.is_checked():
+                continue
+        except Exception:
+            continue
+        if texto_de_checkbox(el) == anio_objetivo:
+            return True
+    return False
 
 
 def main() -> int:
@@ -268,6 +298,28 @@ def main() -> int:
                     f"Filtro de mes no quedo limpio tras 4 intentos -- objetivo_marcado={objetivo_ok} "
                     f"extras_todavia_marcados={extras}. Se aborta sin descargar (mejor sin csv que con "
                     f"datos de mas de un mes mezclados) -- reintentar_faltantes lo reintenta solo."
+                )
+
+            # Verificacion explicita del filtro de AÑO -- el script nunca lo
+            # tocaba antes (solo manejaba Mes), confiando en que quedara
+            # marcado de una sesion anterior. El bug de arriba (estado_de_meses
+            # desmarcando el año por error) demostro que ese supuesto es
+            # fragil: sin esto, un año en blanco deja la tabulacion cruzada
+            # vacia para TODAS las sucursales sin ningun error visible.
+            print(f"Marcando año '{ANIO_OBJETIVO}'...", flush=True)
+            for intento_anio in range(4):
+                if estado_de_anio(fr, ANIO_OBJETIVO):
+                    print(f"Filtro de año verificado: '{ANIO_OBJETIVO}' marcado.", flush=True)
+                    break
+                click_checkbox_por_texto(fr, ANIO_OBJETIVO)
+                time.sleep(5 * (intento_anio + 1))
+            else:
+                pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_filtro_anio.png"))
+                raise SystemExit(
+                    f"No se pudo dejar marcado el año '{ANIO_OBJETIVO}' tras 4 intentos -- ver "
+                    f"error_filtro_anio.png. Se aborta sin descargar (mejor sin csv que con la "
+                    f"tabulacion cruzada vacia por filtro de año en blanco) -- reintentar_faltantes "
+                    f"lo reintenta solo."
                 )
 
             print("Esperando 60s fijos a que la tabla recargue...", flush=True)

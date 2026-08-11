@@ -212,6 +212,12 @@ jobs:
           MES: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
           ANIO: ${{ steps.mes.outputs.anio }}
         run: |
+          # set -o pipefail: sin esto, un combinar.py que revienta (ej. sin
+          # CSV que combinar) queda enmascarado por el exit 0 de `tee`, y el
+          # job/run quedan en verde aunque no se haya subido nada -- ni la
+          # alerta de Telegram de abajo (if: failure()) llega a dispararse
+          # (visto 2026-08-11: run exitoso, artifact combinado inexistente).
+          set -o pipefail
           mkdir -p combinado
           python scripts/combinar.py todos/ "combinado/${MES}_${ANIO}_todas_sucursales.csv" \
             --esperadas --mes-objetivo "${MES} de ${ANIO}" | tee combinar.log
