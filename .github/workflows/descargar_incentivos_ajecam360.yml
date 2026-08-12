@@ -1,0 +1,83 @@
+name: Descargar Incentivos Comerciales (Tableau) -- ajecam360 [PRUEBA]
+
+# Copia de descargar_incentivos.yml para el sincronizador de ajecam360 (todavía
+# en pruebas) -- ver descargar_ajecam360.yml para el porqué completo. Encadenado
+# al workflow de VENTAS de ajecam360 (no al de producción) por el mismo motivo
+# original: no loguearse a Tableau al mismo tiempo que la descarga de ventas.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mes_objetivo:
+        description: "Mes a marcar (vacio = el mes en curso, calculado solo)"
+        required: false
+        default: ""
+      mes_a_desmarcar:
+        description: "Mes actualmente marcado a desmarcar (vacio = el mes anterior, calculado solo)"
+        required: false
+        default: ""
+  workflow_run:
+    workflows: ["Descargar DATA PARA ANALISIS (Tableau) -- ajecam360 [PRUEBA]"]
+    types: [completed]
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Calcular mes en curso
+        id: mes
+        run: |
+          MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
+          MES_NUM=$(date -u +%-m)
+          MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
+          MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
+          echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "previo=$MES_PREV" >> "$GITHUB_OUTPUT"
+          echo "Mes calculado: $MES_ACTUAL (anterior: $MES_PREV)"
+
+      - name: Descargar vista de Incentivos
+        env:
+          TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
+          TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
+          MES_OBJETIVO: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar != '' && github.event.inputs.mes_a_desmarcar || steps.mes.outputs.previo }}
+          SALIDA_DIR: ./salida
+        run: python scripts/descargar_incentivos.py
+
+      - name: Subir resultado como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incentivos-${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
+          path: salida/
+          retention-days: 14
+
+      - name: Instalar rclone
+        if: success()
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configurar rclone
+        if: success()
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+      - name: Subir CSV a Google Drive (carpeta de PRUEBA)
+        if: success()
+        run: |
+          rclone copy salida/ "gdrive_aje:ajecam360_prueba/incentivos/" -v --include "*.csv"

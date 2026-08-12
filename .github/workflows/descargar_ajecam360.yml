@@ -1,4 +1,18 @@
-name: Descargar DATA PARA ANALISIS (Tableau)
+name: Descargar DATA PARA ANALISIS (Tableau) -- ajecam360 [PRUEBA]
+
+# Copia deliberada de descargar.yml, SOLO para el sincronizador de ajecam360
+# (todavía en pruebas, no en producción). 2026-08-12: ajecam360 y
+# grandes_perdidas_bot terminaron con su propio servicios/sincronizador_datos.py
+# cada uno, ambos disparando ESTE MISMO workflow (descargar.yml) alrededor de la
+# misma hora -- exactamente el problema que ya se había resuelto una vez el
+# 2026-08-09 (cron interno + ajecam360 pisándose sobre Tableau, "datos mezclados").
+# En vez de coordinar dos sincronizadores independientes contra un solo workflow
+# (frágil, y grandes_perdidas_bot es el que está en producción y no se puede
+# arriesgar), ajecam360 pasa a tener su propio workflow, su propio historial de
+# runs, y su propia carpeta de Drive (ver el último paso) -- cero superficie de
+# colisión con producción mientras ajecam360 sigue en pruebas. Cuando ajecam360
+# reemplace a grandes_perdidas_bot en producción, hay que decidir cuál de los dos
+# workflows queda como el real y borrar el otro (no mantener ambos para siempre).
 
 on:
   workflow_dispatch:
@@ -11,34 +25,17 @@ on:
         description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
         required: false
         default: "mayo"
-  # Sin `schedule:` a propósito (2026-08-09): antes corría por su propio cron a las
-  # 06:00 GT Y por el disparo de un sincronizador externo casi a la misma hora --
-  # dos disparos seguidos duplicaban la carga de 10 sesiones simultáneas sobre
-  # Tableau, justo lo que causó el bug de datos mezclados ese día. El único
-  # disparador de ESTE workflow es servicios/sincronizador_datos.py de
-  # grandes_perdidas_bot (producción): dispara, ESPERA, VALIDA, y reintenta hasta
-  # 3 veces si algo sale mal. Si hace falta disparar manual, workflow_dispatch
-  # sigue funcionando igual.
-  #
-  # 2026-08-12: ajecam360 (todavía en pruebas) tenía su PROPIO sincronizador
-  # disparando este mismo workflow por separado -- mismo problema de 2026-08-09,
-  # con otro nombre. Ajecam360 pasa a tener su propio workflow
-  # (descargar_ajecam360.yml, misma lógica, carpeta de Drive de prueba aparte) en
-  # vez de compartir este. Cuando ajecam360 reemplace a este bot en producción,
-  # decidir cuál workflow queda y borrar el otro.
 
 concurrency:
-  # Compartido con descargar_ajecam360.yml a propósito -- si alguna vez los dos
-  # se disparan casi al mismo tiempo, GitHub Actions encola en vez de correr
-  # simultáneo. Defensa en profundidad además de la separación de arriba.
+  # Compartido con descargar.yml a propósito: aunque alguna vez se dispararan los
+  # dos casi al mismo tiempo, GitHub Actions encola en vez de correr am
+  # simultáneo -- la causa raíz original (2+ sesiones de Tableau a la vez) queda
+  # cubierta incluso si el aislamiento de arriba fallara por algún motivo.
   group: tableau-scrape-ventas
   cancel-in-progress: false
 
 jobs:
   setup:
-    # Fuente unica de la lista de sucursales (scripts/sucursales.py) -- antes
-    # solo vivia hardcodeada en la matriz de abajo, asi que no habia contra
-    # que validar que el combinado quedo completo.
     runs-on: ubuntu-latest
     outputs:
       sucursales: ${{ steps.leer.outputs.sucursales }}
@@ -71,10 +68,6 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Calcular mes en curso
-        # Antes el mes/mes-a-desmarcar en corridas de cron (sin inputs) caían al
-        # fallback hardcodeado 'agosto'/'mayo' -- correcto hoy por coincidencia,
-        # pero se habría roto en silencio en septiembre (mismo patrón ya
-        # arreglado en descargar_incentivos.yml, esto se le había quedado atrás).
         id: mes
         run: |
           MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
@@ -104,12 +97,6 @@ jobs:
           if-no-files-found: warn
 
   reintentar_faltantes:
-    # Red de seguridad: bajo carga de 10 sesiones simultaneas Tableau a veces no
-    # dispara la descarga a tiempo (visto 2026-08-07: 4/10 sucursales con timeout,
-    # y el job de abajo subio igual un combinado incompleto a Drive). Este job
-    # corre SIEMPRE (if: always()), calcula que sucursales quedaron sin CSV ni
-    # marker de "sin datos", y las reintenta UNA A LA VEZ (menos carga sobre
-    # Tableau que reintentar en paralelo, y con mas margen de timeout).
     needs: [setup, descargar]
     if: always()
     runs-on: ubuntu-latest
@@ -226,11 +213,6 @@ jobs:
           MES: ${{ github.event.inputs.mes_objetivo != '' && github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}
           ANIO: ${{ steps.mes.outputs.anio }}
         run: |
-          # set -o pipefail: sin esto, un combinar.py que revienta (ej. sin
-          # CSV que combinar) queda enmascarado por el exit 0 de `tee`, y el
-          # job/run quedan en verde aunque no se haya subido nada -- ni la
-          # alerta de Telegram de abajo (if: failure()) llega a dispararse
-          # (visto 2026-08-11: run exitoso, artifact combinado inexistente).
           set -o pipefail
           mkdir -p combinado
           python scripts/combinar.py todos/ "combinado/${MES}_${ANIO}_todas_sucursales.csv" \
@@ -247,7 +229,6 @@ jobs:
         run: |
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$ADMIN_CHAT_ID" ]; then
             echo "TELEGRAM_BOT_TOKEN/ADMIN_CHAT_ID no configurados en este repo -- se omite la alerta."
-            echo "Agregalos en Settings > Secrets and variables > Actions si querés notificación por Telegram."
             exit 0
           fi
           FALTANTES=$(python3 -c "
@@ -257,7 +238,7 @@ jobs:
           ")
           MES="${{ github.event.inputs.mes_objetivo || steps.mes.outputs.actual }}"
           URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TEXTO="⚠️ tbcarga_aje360: el acumulado de ${MES} quedó INCOMPLETO tras reintentar. Faltan: ${FALTANTES}. NO se subió nada a Drive -- se conserva el archivo del día anterior. Ver: ${URL}"
+          TEXTO="⚠️ tbcarga_aje360 [ajecam360-prueba]: el acumulado de ${MES} quedó INCOMPLETO tras reintentar. Faltan: ${FALTANTES}. NO se subió nada a Drive. Ver: ${URL}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${ADMIN_CHAT_ID}" \
             --data-urlencode text="${TEXTO}" > /dev/null
@@ -272,7 +253,7 @@ jobs:
             exit 0
           fi
           URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TEXTO="ℹ️ tbcarga_aje360: alguna sucursal trajo el CSV con meses mezclados -- se descartaron esas filas automáticamente y el archivo subido a Drive quedó correcto. Si se repite seguido, revisar scripts/descargar.py. Log: ${URL}"
+          TEXTO="ℹ️ tbcarga_aje360 [ajecam360-prueba]: alguna sucursal trajo el CSV con meses mezclados -- se descartaron esas filas automáticamente. Log: ${URL}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${ADMIN_CHAT_ID}" \
             --data-urlencode text="${TEXTO}" > /dev/null
@@ -293,6 +274,6 @@ jobs:
           mkdir -p ~/.config/rclone
           printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
 
-      - name: Subir a Google Drive
+      - name: Subir a Google Drive (carpeta de PRUEBA -- separada de producción)
         run: |
-          rclone copy combinado/ "gdrive_aje:" -v
+          rclone copy combinado/ "gdrive_aje:ajecam360_prueba" -v
