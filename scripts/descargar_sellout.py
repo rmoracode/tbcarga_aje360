@@ -186,18 +186,87 @@ def estado_de_anio(fr, anio_objetivo: str) -> bool:
     return False
 
 
+def abrir_desplegable_sucursal(pagina) -> bool:
+    """NUEVO -- corrige el bug real del primer intento (run #1, 2026-08-14): a
+    diferencia de Mes/Año (checkboxes YA visibles al cargar la página),
+    nomb_sucursal arranca COLAPSADO -- un cuadrito que muestra el valor actual
+    (ej. "(Todo)" o "HUEHUETENANGO") con una flechita, y la lista de 40
+    territorios con checkboxes recién aparece en el DOM después de hacer click
+    ahí (confirmado con captura real del usuario, 2026-08-14: se ve la etiqueta
+    "nomb_sucursal" con el cuadro clickeable justo debajo).
+
+    Estrategia: buscar el texto EXACTO "nomb_sucursal" en cada frame (es la
+    etiqueta del filtro, no el valor), y clickear el primer elemento clickeable
+    que aparece DEBAJO de esa etiqueta (mismo eje X, Y mayor, la distancia más
+    chica) -- ese es el cuadro colapsado. Nunca vi el DOM real, así que esto
+    puede necesitar un ajuste más si el layout no es exactamente ese; por eso
+    _renderizar_torre dejó capturas de diagnóstico en cada paso."""
+    for fr in pagina.frames:
+        try:
+            etiqueta = fr.get_by_text("nomb_sucursal", exact=True)
+            if etiqueta.count() == 0:
+                continue
+            box_etiqueta = etiqueta.first.bounding_box()
+            if box_etiqueta is None:
+                continue
+
+            # Busca, en el mismo frame, el elemento clickeable más cercano
+            # DEBAJO de la etiqueta (heurística de posición, no de selector --
+            # más resiliente a cambios de clase/id que Tableau no expone estables).
+            # evaluate_handle (no evaluate) para quedarse con una REFERENCIA real
+            # al elemento del DOM -- clickearlo vía Playwright (no coordenadas de
+            # mouse a mano) evita el problema de mezclar coordenadas relativas al
+            # frame con coordenadas de la página si el iframe no arranca en (0,0).
+            handle = fr.evaluate_handle("""
+                ([xEtiqueta, yEtiqueta]) => {
+                    const elementos = document.querySelectorAll('div, span, td, [role="button"], [role="listbox"]');
+                    let mejor = null, mejorDist = Infinity;
+                    for (const el of elementos) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 20 || r.height < 10) continue;
+                        const dy = r.top - yEtiqueta;
+                        const dx = Math.abs((r.left + r.width/2) - xEtiqueta);
+                        if (dy > 0 && dy < 60 && dx < 150) {
+                            const dist = dy + dx;
+                            if (dist < mejorDist) { mejorDist = dist; mejor = el; }
+                        }
+                    }
+                    return mejor;
+                }
+            """, [box_etiqueta["x"] + box_etiqueta["width"] / 2, box_etiqueta["y"] + box_etiqueta["height"]])
+            elemento = handle.as_element()
+            if elemento is None:
+                continue
+            texto_candidato = elemento.evaluate("e => e.innerText?.slice(0,60) || ''")
+            print(f"  Click en cuadro colapsado de nomb_sucursal (texto: {texto_candidato!r})...", flush=True)
+            elemento.click(timeout=10000)
+            time.sleep(3)
+            return True
+        except Exception as e:
+            print(f"  (error probando frame para abrir nomb_sucursal: {e})", flush=True)
+    return False
+
+
 def seleccionar_solo_territorio(pagina, territorio: str) -> bool:
     """NUEVO -- no existe en descargar.py. El panel de nomb_sucursal de esta vista
-    trae 40 territorios + '(Todo)', TODOS marcados por defecto, con botones propios
-    Cancelar/Aplicar (confirmado con capturas reales) -- a diferencia de Mes/Año,
-    que aplican el cambio al vuelo. Para acotar a UN territorio: desmarcar '(Todo)'
-    (en Tableau eso suele desmarcar todo el resto de un tirón), marcar solo el
-    territorio pedido, y click en 'Aplicar' para que el filtro realmente pegue.
+    trae 40 territorios + '(Todo)', con botones propios Cancelar/Aplicar
+    (confirmado con capturas reales) -- a diferencia de Mes/Año, que aplican el
+    cambio al vuelo. Arranca COLAPSADO (ver abrir_desplegable_sucursal): hay que
+    abrirlo primero, y RECIÉN AHÍ desmarcar '(Todo)', marcar solo el territorio
+    pedido, y click en 'Aplicar'.
 
     Devuelve True si encontró y aplicó el filtro, False si no encontró el panel
     (en cuyo caso el llamador debe abortar con una captura -- mejor eso que
     descargar TODOS los territorios mezclados sin que nadie se entere)."""
-    fr = encontrar_frame_con_checkboxes(pagina, minimo=30)  # el panel de territorios tiene >30 opciones
+    if not abrir_desplegable_sucursal(pagina):
+        print("  AVISO: no se pudo abrir el desplegable de nomb_sucursal por posición -- "
+              "intentando de todas formas por si ya estaba abierto.", flush=True)
+
+    # intentos=6 (60s), no los 18 (180s) por defecto: si ya se hizo click para
+    # abrir el desplegable, el panel debería aparecer rápido -- esperar 3 minutos
+    # enteros acá (como pasó en el run #1, que igual terminó fallando) solo
+    # alarga un fallo real sin ganar nada.
+    fr = encontrar_frame_con_checkboxes(pagina, minimo=30, intentos=6)  # el panel de territorios tiene >30 opciones
     if fr is None:
         return False
 
