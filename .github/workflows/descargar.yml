@@ -64,11 +64,32 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Instalar dependencias
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      # Cache de minutos (2026-08-14): el binario de Chromium (~150-300MB) se
+      # descargaba de cero en CADA uno de los ~14 jobs de este workflow, todos los
+      # días -- el costo repetido más grande de todo el pipeline, sin ningún
+      # beneficio (el navegador no cambia salvo que se actualice playwright en
+      # requirements.txt). Con cache-hit, playwright install-deps SOLO instala las
+      # librerías de sistema (apt) que la VM efímera de Actions nunca conserva
+      # entre jobs -- eso sí hay que instalarlo siempre, pero es la parte barata.
+      - name: Cache de navegador Chromium (Playwright)
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Instalar Chromium (cache miss -- primera vez o requirements.txt cambió)
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Instalar dependencias de sistema de Chromium (cache hit -- navegador ya está)
+        if: steps.cache-playwright.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
 
       - name: Calcular mes en curso
         # Antes el mes/mes-a-desmarcar en corridas de cron (sin inputs) caían al
@@ -121,11 +142,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Instalar dependencias
-        run: |
-          pip install -r requirements.txt pandas
-          playwright install --with-deps chromium
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt pandas
+
+      - name: Cache de navegador Chromium (Playwright)
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Instalar Chromium (cache miss -- primera vez o requirements.txt cambió)
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Instalar dependencias de sistema de Chromium (cache hit -- navegador ya está)
+        if: steps.cache-playwright.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
 
       - name: Descargar artifacts de la primera pasada
         uses: actions/download-artifact@v4
