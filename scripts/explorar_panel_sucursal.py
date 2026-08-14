@@ -116,6 +116,7 @@ def main() -> int:
                 print(f"  frame[{idx}]: error buscando '(Todo)': {e}", flush=True)
 
         print("\n--- Buscando texto 'nomb_sucursal' literal en cada frame ---", flush=True)
+        posiciones_etiqueta = []
         for idx, fr in enumerate(pagina.frames):
             try:
                 loc = fr.get_by_text("nomb_sucursal", exact=False)
@@ -126,10 +127,44 @@ def main() -> int:
                         try:
                             box = loc.nth(i).bounding_box()
                             print(f"   [{i}] box={box}", flush=True)
+                            if box:
+                                posiciones_etiqueta.append((idx, fr, box))
                         except Exception:
                             pass
             except Exception:
                 pass
+
+        # NUEVO: en vez de solo buscar texto exacto "(Todo)" cerca de la etiqueta
+        # (lo que en el primer intento asumió mal la distancia -- resultó estar a
+        # 116px, no <60px), esto lista TODOS los elementos con texto visible en
+        # una franja generosa debajo de la etiqueta "nomb_sucursal", sea lo que
+        # sea que digan -- para ver exactamente qué hay ahí sin adivinar más.
+        print("\n--- TODOS los elementos con texto visible, 0-250px debajo de 'nomb_sucursal' ---", flush=True)
+        for idx, fr, box_etiqueta in posiciones_etiqueta:
+            try:
+                candidatos = fr.evaluate("""
+                    ([xEtiqueta, yEtiqueta]) => {
+                        const elementos = document.querySelectorAll('div, span, td, button, [role="button"], [role="listbox"], [role="combobox"]');
+                        const resultado = [];
+                        for (const el of elementos) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width < 15 || r.height < 8) continue;
+                            const dy = r.top - yEtiqueta;
+                            const dx = Math.abs((r.left + r.width/2) - xEtiqueta);
+                            if (dy >= -5 && dy < 250 && dx < 250) {
+                                const texto = (el.innerText || '').trim().slice(0, 60);
+                                if (texto) resultado.push({dy: Math.round(dy), dx: Math.round(dx), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), texto});
+                            }
+                        }
+                        resultado.sort((a,b) => a.dy - b.dy);
+                        return resultado.slice(0, 25);
+                    }
+                """, [box_etiqueta["x"] + box_etiqueta["width"] / 2, box_etiqueta["y"] + box_etiqueta["height"]])
+                print(f"\nframe[{idx}], debajo de la etiqueta en x={box_etiqueta['x']:.0f} y={box_etiqueta['y']:.0f}:", flush=True)
+                for c in candidatos:
+                    print(f"   dy={c['dy']:4d} dx={c['dx']:4d}  pos=({c['x']},{c['y']}) size=({c['w']}x{c['h']})  texto={c['texto']!r}", flush=True)
+            except Exception as e:
+                print(f"  error listando candidatos en frame[{idx}]: {e}", flush=True)
 
         contexto.close()
         navegador.close()
