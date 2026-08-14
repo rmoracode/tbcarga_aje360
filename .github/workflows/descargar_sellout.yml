@@ -1,0 +1,119 @@
+name: Descargar DATA PARA ANALISIS SELLOUT (econored) [PRUEBA]
+
+# Backfill de UNA SOLA VEZ (no recurrente, sin schedule) -- pedido explícito
+# 2026-08-14: clientes de distribuidores independientes/econored, misma vista
+# de Tableau (Reportera_Comercial, otra pestaña) pero con su propia estructura
+# de territorios (scripts/sucursales_sellout.py, 40 territorios -- no las 10
+# sucursales de AJEMAYA).
+#
+# CONSERVADOR A PROPÓSITO: sin job de combinar/subir a Drive todavía. La
+# lógica de scripts/descargar_sellout.py (selección de territorio via
+# checkbox + botón Aplicar) es NUEVA, nunca probada contra la vista real --
+# primero se revisan un par de CSV reales como artifacts antes de confiar en
+# automatizar el resto (evita subir a Drive un combinado con datos mezclados
+# si algún selector no matcheó como se esperaba).
+#
+# max-parallel BAJO (3, no 10 como ventas): 40 territorios x hasta 5 meses son
+# muchas sesiones de Tableau -- mejor ir despacio en la primera corrida real.
+
+on:
+  workflow_dispatch:
+    inputs:
+      meses:
+        description: "Meses a descargar, separados por coma (ej. abril,mayo,junio,julio,agosto)"
+        required: false
+        default: "agosto"
+      mes_a_desmarcar:
+        description: "Mes que pueda venir marcado por defecto en la vista, a desmarcar (vacio = ninguno)"
+        required: false
+        default: ""
+      anio_objetivo:
+        description: "Año objetivo"
+        required: false
+        default: "2026"
+      solo_un_territorio:
+        description: "Para probar con UN solo territorio antes de correr los 40 (ej. CHIQUIMULA). Vacio = todos."
+        required: false
+        default: ""
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      territorios: ${{ steps.leer.outputs.territorios }}
+      meses: ${{ steps.mesesjson.outputs.meses }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - id: leer
+        run: |
+          if [ -n "${{ github.event.inputs.solo_un_territorio }}" ]; then
+            python3 -c "import json; print('territorios=' + json.dumps(['${{ github.event.inputs.solo_un_territorio }}']))" >> "$GITHUB_OUTPUT"
+          else
+            echo "territorios=$(python3 scripts/sucursales_sellout.py --json)" >> "$GITHUB_OUTPUT"
+          fi
+      - id: mesesjson
+        run: |
+          python3 -c "
+          import json
+          meses = '${{ github.event.inputs.meses }}'.split(',')
+          meses = [m.strip() for m in meses if m.strip()]
+          print('meses=' + json.dumps(meses))
+          " >> "$GITHUB_OUTPUT"
+
+  descargar:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        territorio: ${{ fromJson(needs.setup.outputs.territorios) }}
+        mes: ${{ fromJson(needs.setup.outputs.meses) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Cache de navegador Chromium (Playwright)
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Instalar Chromium (cache miss -- primera vez o requirements.txt cambió)
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Instalar dependencias de sistema de Chromium (cache hit -- navegador ya está)
+        if: steps.cache-playwright.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
+
+      - name: Descargar vista de Tableau (SELLOUT / econored)
+        env:
+          TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
+          TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
+          TERRITORIO: ${{ matrix.territorio }}
+          MES_OBJETIVO: ${{ matrix.mes }}
+          MES_A_DESMARCAR: ${{ github.event.inputs.mes_a_desmarcar }}
+          ANIO_OBJETIVO: ${{ github.event.inputs.anio_objetivo }}
+          SALIDA_DIR: ./salida
+        run: python scripts/descargar_sellout.py
+
+      - name: Subir resultado como artifact (CSV + capturas de diagnóstico)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sellout-${{ matrix.mes }}-${{ matrix.territorio }}
+          path: salida/
+          retention-days: 14
+          if-no-files-found: warn
