@@ -1,0 +1,56 @@
+name: Explorar panel de filtros SELLOUT (econored) [DIAGNOSTICO]
+
+# Un solo job, sin matriz, rapido -- solo saca una captura del panel de filtros
+# CERRADO + lista donde estan los "(Todo)" en el DOM. No descarga ningun CSV.
+# Pedido explicito 2026-08-14 tras el primer intento fallido de
+# descargar_sellout.yml (el panel de 40 territorios no estaba abierto en el DOM
+# cuando el script intento leerlo).
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  explorar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Cache de navegador Chromium (Playwright)
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Instalar Chromium (cache miss)
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Instalar dependencias de sistema de Chromium (cache hit)
+        if: steps.cache-playwright.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
+
+      - name: Explorar panel de filtros
+        env:
+          TABLEAU_USER: ${{ secrets.TABLEAU_USER }}
+          TABLEAU_PASSWORD: ${{ secrets.TABLEAU_PASSWORD }}
+          SALIDA_DIR: ./salida
+        run: python scripts/explorar_panel_sucursal.py
+
+      - name: Subir captura + log como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exploracion-panel-sucursal
+          path: salida/
+          retention-days: 7
