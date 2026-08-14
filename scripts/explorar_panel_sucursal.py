@@ -35,7 +35,24 @@ def iniciar_sesion(pagina):
     if not usuario or not clave:
         raise SystemExit("Faltan TABLEAU_USER / TABLEAU_PASSWORD (secrets de GitHub).")
     print("Iniciando sesion en Tableau...", flush=True)
-    pagina.goto(URL_LOGIN, wait_until="domcontentloaded", timeout=60000)
+    # 2026-08-14: dos corridas seguidas de este mismo dia fallaron con timeout
+    # de 60s justo en este goto() -- probable saturacion/rate-limit del lado
+    # del servidor tras varios logins automatizados seguidos hoy (corrida real
+    # + 2 intentos + 2 exploraciones previas). Reintenta con backoff en vez de
+    # morir al primer timeout.
+    ultimo_error = None
+    for intento in range(1, 4):
+        try:
+            pagina.goto(URL_LOGIN, wait_until="domcontentloaded", timeout=90000)
+            ultimo_error = None
+            break
+        except Exception as e:
+            ultimo_error = e
+            espera = 20 * intento
+            print(f"  goto() a login fallo (intento {intento}/3): {e} -- reintentando en {espera}s...", flush=True)
+            time.sleep(espera)
+    if ultimo_error is not None:
+        raise SystemExit(f"No se pudo cargar la pagina de login tras 3 intentos: {ultimo_error}")
     pagina.wait_for_timeout(5000)
     campo_usuario = None
     for sel in ["input[name='username']", "input#username", "input[type='text']"]:
