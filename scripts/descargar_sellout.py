@@ -58,6 +58,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from companias_sellout import COMPANIAS_POR_SUCURSAL  # noqa: E402
 from zonas_sellout import ZONAS_POR_SUCURSAL  # noqa: E402
+from rutas_sellout import RUTAS_POR_SUCURSAL  # noqa: E402
 
 TERRITORIO = os.environ.get("TERRITORIO", "CHIQUIMULA")
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
@@ -113,6 +114,17 @@ if _ZONAS:
     URL_VISTA += "&cod_zona_cliente=" + urllib.parse.quote(",".join(_ZONAS))
 else:
     print(f"AVISO: '{TERRITORIO}' no tiene zonas en zonas_sellout.py -- se deja el "
+          f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
+
+# cod_ruta_cliente es el TERCER filtro dependiente (ver rutas_sellout.py): con la
+# zona ya corregida, CHIQUIMULILLA seguia muriendo porque la ruta quedaba en
+# "(Ninguno)" -- captura del run 33116367726. En el territorio que si funcionaba
+# la vista la habia autorresuelto a "(Todo)".
+_RUTAS = RUTAS_POR_SUCURSAL.get(TERRITORIO, [])
+if _RUTAS:
+    URL_VISTA += "&cod_ruta_cliente=" + urllib.parse.quote(",".join(_RUTAS))
+else:
+    print(f"AVISO: '{TERRITORIO}' no tiene rutas en rutas_sellout.py -- se deja el "
           f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
 
 URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
