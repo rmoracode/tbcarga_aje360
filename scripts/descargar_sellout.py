@@ -57,6 +57,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from companias_sellout import COMPANIAS_POR_SUCURSAL  # noqa: E402
+from zonas_sellout import ZONAS_POR_SUCURSAL  # noqa: E402
 
 TERRITORIO = os.environ.get("TERRITORIO", "CHIQUIMULA")
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
@@ -90,11 +91,29 @@ if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
           f"{len(_TODAS_LAS_COMPANIAS)} companias conocidas. Conviene regenerar ese mapa.",
           flush=True)
 
+# cod_zona_cliente TAMBIEN va en la URL. Es un filtro dependiente que viene
+# guardado en 50000 (zona de HUEHUETENANGO): al cambiar de sucursal por URL esa
+# zona deja de ser valida y el filtro cae a "(Ninguno)" -- cero filas, y como la
+# tabla queda vacia el panel de Mes ni se dibuja, que es como morian 9 de los 14
+# territorios del run 33114619647 ("mejor frame: 4 checkboxes", solo el de Anio).
+# Confirmado comparando las capturas: CHIQUIMULA ok con zona 40400 autorresuelta,
+# CHIQUIMULILLA fallido con zona en (Ninguno).
+#
+# Se mandan TODAS las zonas del territorio, no una: 9 territorios tienen dos
+# (CHIQUIMULA 40400 y 40401, PETEN 44600/44601, ...) y en la corrida que si
+# funciono la vista habia autoseleccionado solo una, o sea que ese CSV venia
+# incompleto sin que nada lo avisara.
+_ZONAS = ZONAS_POR_SUCURSAL.get(TERRITORIO, [])
 URL_VISTA = (
     "https://bitableau.ajegroup.com/#/site/Cam/views/Reportera_Comercial/DATAPARAANALISISSELLOUT"
     f"?:iid=3&nomb_sucursal={urllib.parse.quote(TERRITORIO)}"
     "&nomb_compania=" + urllib.parse.quote(",".join(_COMPANIAS))
 )
+if _ZONAS:
+    URL_VISTA += "&cod_zona_cliente=" + urllib.parse.quote(",".join(_ZONAS))
+else:
+    print(f"AVISO: '{TERRITORIO}' no tiene zonas en zonas_sellout.py -- se deja el "
+          f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
 
 URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
 
