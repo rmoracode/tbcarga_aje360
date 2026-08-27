@@ -382,7 +382,15 @@ def main() -> int:
               f"(companias: {_COMPANIAS or 'todas'})", flush=True)
 
         print("Buscando el panel de Mes/Año...", flush=True)
-        fr = encontrar_frame_con_checkboxes(pagina)
+        # minimo=5, no el 10 por defecto: ese 10 asume Anio (4) + los 6 meses de la
+        # ventana, pero el panel de Mes solo lista los meses CON DATOS de ese
+        # territorio. TECULUTAN, el unico fallo de los 40 del run 33119137340, se
+        # quedaba estable en 7 (Anio 4 + 3 meses) y el script lo daba por "sin
+        # filtros" cuando en realidad la pagina habia cargado bien. Con 5 alcanza
+        # para exigir el panel de Anio mas al menos un mes; si el mes objetivo no
+        # esta entre ellos, click_checkbox_por_texto() falla igual mas abajo e
+        # imprime los textos reales, que es el error util.
+        fr = encontrar_frame_con_checkboxes(pagina, minimo=5)
         if fr is None:
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_sin_filtros.png"))
             raise SystemExit("No se encontraron checkboxes de Mes/Año -- ver error_sin_filtros.png")
