@@ -403,7 +403,30 @@ def main() -> int:
             for i, t in enumerate(textos):
                 print(f"  [{i}] {t!r}", flush=True)
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_checkbox_no_encontrado.png"))
-            raise SystemExit(f"No se encontro el checkbox de mes '{MES_OBJETIVO}' -- ver textos arriba")
+
+            # El panel de Mes lista SOLO los meses con datos de este territorio. Si
+            # cargo bien (hay meses listados) pero el objetivo no esta entre ellos,
+            # es que el territorio no vendio ese mes -- no es un fallo. TECULUTAN,
+            # el unico caso de los 40 (run 33123846906), solo ofrece abril y mayo y
+            # tiene 0 filas de julio/agosto tambien en el historico: es un
+            # territorio sin movimiento, y hacerlo fallar a diario ensuciaria el
+            # pipeline sin motivo. Mismo marcador SIN_DATOS que ya usa mas abajo el
+            # caso de "boton de descarga deshabilitado".
+            meses_ofrecidos = [t for t in textos if t.strip().lower() in MESES_LISTA]
+            if meses_ofrecidos:
+                print(f"SIN DATOS -- '{TERRITORIO}' no tiene {MES_OBJETIVO}; el panel solo "
+                      f"ofrece {meses_ofrecidos}. No es un error.", flush=True)
+                marcador = os.path.join(
+                    SALIDA_DIR, f"SIN_DATOS_{TERRITORIO.replace(' ', '_')}.marker")
+                open(marcador, "w").close()
+                contexto.close()
+                navegador.close()
+                return 0
+
+            raise SystemExit(
+                f"No se encontro el checkbox de mes '{MES_OBJETIVO}' y el panel tampoco "
+                f"lista ningun mes -- la pagina no cargo bien. Ver textos arriba."
+            )
         time.sleep(2)
         if MES_A_DESMARCAR:
             print(f"Desmarcando '{MES_A_DESMARCAR}'...", flush=True)
