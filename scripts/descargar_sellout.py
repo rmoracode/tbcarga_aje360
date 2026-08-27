@@ -8,12 +8,20 @@ adaptada solo en 2 puntos reales:
   1. La vista es otra pestaña del MISMO workbook (Reportera_Comercial), así que
      la URL cambia de DATAPARAANALISIS a DATAPARAANALISISSELLOUT (confirmado
      por el usuario: mismo sitio, mismo libro, otra pestaña).
-  2. A diferencia de la vista de ventas (donde nomb_sucursal se filtra por
-     parámetro de URL), acá "nomb_sucursal" es un panel de checkboxes MULTI-
-     SELECT con "(Todo)" + 40 territorios, con botones Cancelar/Aplicar propios
-     (confirmado con capturas reales del panel, 2026-08-14) -- necesita su
-     propia función de selección (seleccionar_solo_territorio), no la reutiliza
-     de Mes/Año porque esas SÍ aplican el cambio al vuelo, sin botón "Aplicar".
+  2. Además de nomb_sucursal, hay que pasar nomb_compania: esta vista trae un
+     filtro guardado de compañía (COMERCIOS SIMAJ HUEHUETENANGO) que hace que
+     cualquier territorio distinto de HUEHUETENANGO devuelva VACÍO. El mapa
+     territorio -> compañías vive en scripts/companias_sellout.py.
+
+CORREGIDO 2026-08-27 (primera corrida real, run 33085005587: los 40 jobs
+terminaron en error_sin_panel_territorio.png y cero CSV). La versión original
+asumía que "nomb_sucursal" era un panel de checkboxes multi-select con botón
+Aplicar y trataba de abrirlo a click. Es falso: el diagnóstico
+(explorar_panel_sucursal.py, run 31844365516) mostró que la página tiene
+exactamente 10 checkboxes -- Mes (6) y Año (4) -- y que sucursal, compañía y
+zona son desplegables colapsados. Ahora el territorio se elige por PARÁMETRO DE
+URL, igual que scripts/descargar.py ya hace para ventas, y se borraron las dos
+funciones que clickeaban el desplegable.
 
 Variables de entorno esperadas:
     TABLEAU_USER             usuario de Tableau (secret, mismo que descargar.py)
@@ -24,10 +32,13 @@ Variables de entorno esperadas:
     ANIO_OBJETIVO             default: año actual UTC
     SALIDA_DIR                default: "./salida"
 
-NO PROBADO todavía contra la vista real (no hay forma de verificarlo sin correr
-en GitHub Actions con las credenciales reales) -- si algún selector no matchea,
-las capturas de pantalla que deja en SALIDA_DIR son la forma de diagnosticar
-qué cambiar, mismo criterio que descargar.py.
+El filtrado por URL sí está verificado contra el servidor real (2026-08-27, vía
+la API de Tableau con los mismos parámetros): CHIQUIMULA daba vacío con el
+filtro por defecto y devuelve 128,874 filas al pasar su compañía; PETEN, SOLOLA
+y MORALES también devuelven datos. Lo que no se pudo probar fuera de GitHub
+Actions es la parte de navegador (login + checkboxes de Mes/Año + descarga),
+porque las credenciales son secrets del repo -- ahí siguen valiendo las capturas
+de SALIDA_DIR como diagnóstico, mismo criterio que descargar.py.
 """
 import json
 import os
@@ -43,6 +54,9 @@ RE_TODO = re.compile(r"^\(Todo\)$|^\(All\)$", re.IGNORECASE)
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from companias_sellout import COMPANIAS_POR_SUCURSAL  # noqa: E402
+
 TERRITORIO = os.environ.get("TERRITORIO", "CHIQUIMULA")
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
 MES_A_DESMARCAR = os.environ.get("MES_A_DESMARCAR", "")
@@ -50,7 +64,37 @@ ANIO_OBJETIVO = os.environ.get("ANIO_OBJETIVO") or str(datetime.now(timezone.utc
 SALIDA_DIR = os.environ.get("SALIDA_DIR", "./salida")
 os.makedirs(SALIDA_DIR, exist_ok=True)
 
-URL_VISTA = "https://bitableau.ajegroup.com/#/site/Cam/views/Reportera_Comercial/DATAPARAANALISISSELLOUT?:iid=3"
+# El territorio y su(s) compania(s) se eligen por PARAMETRO DE URL, igual que hace
+# scripts/descargar.py con nomb_sucursal para ventas -- no clickeando el desplegable.
+# Cambio 2026-08-27, tras el fallo de la primera corrida real: la version anterior
+# intentaba abrir el desplegable de nomb_sucursal y buscar 30+ checkboxes, pero el
+# diagnostico (explorar_panel_sucursal.py, run 31844365516) mostro que en la pagina
+# solo hay 10 checkboxes -- Mes (6) y Anio (4). Sucursal/compania/zona son
+# desplegables colapsados, no paneles de checkboxes, asi que ese camino nunca podia
+# funcionar y las 40 corridas terminaban en error_sin_panel_territorio.png.
+#
+# nomb_compania hace falta ADEMAS de nomb_sucursal porque la vista trae un filtro
+# guardado de compania (COMERCIOS SIMAJ HUEHUETENANGO): sin sobreescribirlo,
+# cualquier territorio que no sea HUEHUETENANGO devuelve vacio -- verificado contra
+# el servidor real el 2026-08-27 (CHIQUIMULA vacio con el filtro por defecto,
+# 128,874 filas al pasar su compania).
+# Red de seguridad: si el territorio no esta en el mapa (nombre nuevo, o un
+# distribuidor que cambio de territorio), se pasan TODAS las companias. Dejar el
+# parametro vacio seria peor: sin el, manda el filtro guardado de la vista y el
+# territorio devuelve vacio en silencio.
+_TODAS_LAS_COMPANIAS = sorted({c for v in COMPANIAS_POR_SUCURSAL.values() for c in v})
+_COMPANIAS = COMPANIAS_POR_SUCURSAL.get(TERRITORIO) or _TODAS_LAS_COMPANIAS
+if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
+    print(f"AVISO: '{TERRITORIO}' no esta en companias_sellout.py -- se pasan las "
+          f"{len(_TODAS_LAS_COMPANIAS)} companias conocidas. Conviene regenerar ese mapa.",
+          flush=True)
+
+URL_VISTA = (
+    "https://bitableau.ajegroup.com/#/site/Cam/views/Reportera_Comercial/DATAPARAANALISISSELLOUT"
+    f"?:iid=3&nomb_sucursal={urllib.parse.quote(TERRITORIO)}"
+    "&nomb_compania=" + urllib.parse.quote(",".join(_COMPANIAS))
+)
+
 URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
 
 
@@ -186,156 +230,6 @@ def estado_de_anio(fr, anio_objetivo: str) -> bool:
     return False
 
 
-def abrir_desplegable_sucursal(pagina) -> bool:
-    """NUEVO -- corrige el bug real del primer intento (run #1, 2026-08-14): a
-    diferencia de Mes/Año (checkboxes YA visibles al cargar la página),
-    nomb_sucursal arranca COLAPSADO -- un cuadrito que muestra el valor actual
-    (ej. "(Todo)" o "HUEHUETENANGO") con una flechita, y la lista de 40
-    territorios con checkboxes recién aparece en el DOM después de hacer click
-    ahí (confirmado con captura real del usuario, 2026-08-14: se ve la etiqueta
-    "nomb_sucursal" con el cuadro clickeable justo debajo).
-
-    Estrategia: buscar el texto EXACTO "nomb_sucursal" en cada frame (es la
-    etiqueta del filtro, no el valor), y clickear el primer elemento clickeable
-    que aparece DEBAJO de esa etiqueta (mismo eje X, Y mayor, la distancia más
-    chica) -- ese es el cuadro colapsado. Nunca vi el DOM real, así que esto
-    puede necesitar un ajuste más si el layout no es exactamente ese; por eso
-    _renderizar_torre dejó capturas de diagnóstico en cada paso."""
-    for fr in pagina.frames:
-        try:
-            etiqueta = fr.get_by_text("nomb_sucursal", exact=True)
-            if etiqueta.count() == 0:
-                continue
-            box_etiqueta = etiqueta.first.bounding_box()
-            if box_etiqueta is None:
-                continue
-
-            # Busca, en el mismo frame, el elemento clickeable más cercano
-            # DEBAJO de la etiqueta (heurística de posición, no de selector --
-            # más resiliente a cambios de clase/id que Tableau no expone estables).
-            # evaluate_handle (no evaluate) para quedarse con una REFERENCIA real
-            # al elemento del DOM -- clickearlo vía Playwright (no coordenadas de
-            # mouse a mano) evita el problema de mezclar coordenadas relativas al
-            # frame con coordenadas de la página si el iframe no arranca en (0,0).
-            handle = fr.evaluate_handle("""
-                ([xEtiqueta, yEtiqueta]) => {
-                    const elementos = document.querySelectorAll('div, span, td, [role="button"], [role="listbox"]');
-                    let mejor = null, mejorDist = Infinity;
-                    for (const el of elementos) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 20 || r.height < 10) continue;
-                        const dy = r.top - yEtiqueta;
-                        const dx = Math.abs((r.left + r.width/2) - xEtiqueta);
-                        if (dy > 0 && dy < 60 && dx < 150) {
-                            const dist = dy + dx;
-                            if (dist < mejorDist) { mejorDist = dist; mejor = el; }
-                        }
-                    }
-                    return mejor;
-                }
-            """, [box_etiqueta["x"] + box_etiqueta["width"] / 2, box_etiqueta["y"] + box_etiqueta["height"]])
-            elemento = handle.as_element()
-            if elemento is None:
-                continue
-            texto_candidato = elemento.evaluate("e => e.innerText?.slice(0,60) || ''")
-            print(f"  Click en cuadro colapsado de nomb_sucursal (texto: {texto_candidato!r})...", flush=True)
-            elemento.click(timeout=10000)
-            time.sleep(3)
-            return True
-        except Exception as e:
-            print(f"  (error probando frame para abrir nomb_sucursal: {e})", flush=True)
-    return False
-
-
-def seleccionar_solo_territorio(pagina, territorio: str) -> bool:
-    """NUEVO -- no existe en descargar.py. El panel de nomb_sucursal de esta vista
-    trae 40 territorios + '(Todo)', con botones propios Cancelar/Aplicar
-    (confirmado con capturas reales) -- a diferencia de Mes/Año, que aplican el
-    cambio al vuelo. Arranca COLAPSADO (ver abrir_desplegable_sucursal): hay que
-    abrirlo primero, y RECIÉN AHÍ desmarcar '(Todo)', marcar solo el territorio
-    pedido, y click en 'Aplicar'.
-
-    Devuelve True si encontró y aplicó el filtro, False si no encontró el panel
-    (en cuyo caso el llamador debe abortar con una captura -- mejor eso que
-    descargar TODOS los territorios mezclados sin que nadie se entere)."""
-    if not abrir_desplegable_sucursal(pagina):
-        print("  AVISO: no se pudo abrir el desplegable de nomb_sucursal por posición -- "
-              "intentando de todas formas por si ya estaba abierto.", flush=True)
-
-    # intentos=6 (60s), no los 18 (180s) por defecto: si ya se hizo click para
-    # abrir el desplegable, el panel debería aparecer rápido -- esperar 3 minutos
-    # enteros acá (como pasó en el run #1, que igual terminó fallando) solo
-    # alarga un fallo real sin ganar nada.
-    fr = encontrar_frame_con_checkboxes(pagina, minimo=30, intentos=6)  # el panel de territorios tiene >30 opciones
-    if fr is None:
-        return False
-
-    print(f"  Desmarcando '(Todo)'...", flush=True)
-    checks = fr.locator("input[type=checkbox]")
-    desmarcado_todo = False
-    for i in range(checks.count()):
-        el = checks.nth(i)
-        texto = texto_de_checkbox(el)
-        if RE_TODO.match(texto):
-            try:
-                if el.is_checked():
-                    el.click(timeout=10000)
-                desmarcado_todo = True
-            except Exception:
-                pass
-            break
-    if not desmarcado_todo:
-        print("  AVISO: no se encontró el checkbox '(Todo)' -- puede que ya no esté todo marcado.", flush=True)
-    time.sleep(2)
-
-    print(f"  Marcando solo '{territorio}'...", flush=True)
-    if not click_checkbox_por_texto(fr, territorio):
-        return False
-    time.sleep(2)
-
-    # Verificación real de estado (mismo criterio que estado_de_meses en descargar.py):
-    # confirmar que SOLO el territorio pedido quedó marcado antes de aplicar.
-    for intento in range(4):
-        checks = fr.locator("input[type=checkbox]")
-        marcados = []
-        for i in range(checks.count()):
-            el = checks.nth(i)
-            try:
-                if el.is_checked():
-                    marcados.append(texto_de_checkbox(el))
-            except Exception:
-                pass
-        marcados_reales = [m for m in marcados if not RE_TODO.match(m)]
-        if marcados_reales == [territorio]:
-            print(f"  Filtro de territorio verificado limpio: solo '{territorio}' marcado.", flush=True)
-            break
-        print(f"  verificación {intento+1}/4: marcados={marcados_reales}", flush=True)
-        time.sleep(3 * (intento + 1))
-    else:
-        print(f"  AVISO: no se pudo confirmar que SOLO '{territorio}' quedó marcado -- "
-              f"último estado: {marcados_reales}. Se continúa igual pero revisar el CSV resultante.",
-              flush=True)
-
-    # Click en "Aplicar" -- a diferencia de Mes/Año, este panel SÍ necesita
-    # confirmación explícita (visto en las capturas: botones Cancelar/Aplicar
-    # propios al pie del panel).
-    aplicado = False
-    for scope in (fr, pagina):
-        try:
-            boton = scope.get_by_text(RE_APLICAR, exact=False)
-            if boton.count() > 0:
-                boton.first.click(timeout=10000)
-                aplicado = True
-                break
-        except Exception:
-            pass
-    if not aplicado:
-        print("  AVISO: no se encontró botón 'Aplicar' -- puede que el filtro ya se haya "
-              "aplicado solo, o que el selector no lo encontró (revisar captura).", flush=True)
-    time.sleep(3)
-    return True
-
-
 def main() -> int:
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
@@ -347,14 +241,10 @@ def main() -> int:
         print(f"Navegando: {URL_VISTA}", flush=True)
         pagina.goto(URL_VISTA, wait_until="domcontentloaded", timeout=60000)
 
-        print("Buscando el panel de territorios (nomb_sucursal)...", flush=True)
-        if not seleccionar_solo_territorio(pagina, TERRITORIO):
-            pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_sin_panel_territorio.png"))
-            raise SystemExit(
-                f"No se encontró/aplicó el panel de territorio para '{TERRITORIO}' -- "
-                f"ver error_sin_panel_territorio.png. Abortado SIN descargar (mejor sin CSV "
-                f"que con TODOS los territorios mezclados)."
-            )
+        # El territorio ya viene aplicado en la URL (ver URL_VISTA arriba) -- no hay
+        # panel que abrir ni checkbox que clickear para esto.
+        print(f"Territorio '{TERRITORIO}' aplicado por URL "
+              f"(companias: {_COMPANIAS or 'todas'})", flush=True)
 
         print("Buscando el panel de Mes/Año...", flush=True)
         fr = encontrar_frame_con_checkboxes(pagina)
