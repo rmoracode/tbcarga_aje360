@@ -8,10 +8,15 @@ adaptada solo en 2 puntos reales:
   1. La vista es otra pestaña del MISMO workbook (Reportera_Comercial), así que
      la URL cambia de DATAPARAANALISIS a DATAPARAANALISISSELLOUT (confirmado
      por el usuario: mismo sitio, mismo libro, otra pestaña).
-  2. Además de nomb_sucursal, hay que pasar nomb_compania: esta vista trae un
-     filtro guardado de compañía (COMERCIOS SIMAJ HUEHUETENANGO) que hace que
-     cualquier territorio distinto de HUEHUETENANGO devuelva VACÍO. El mapa
-     territorio -> compañías vive en scripts/companias_sellout.py.
+  2. Además de nomb_sucursal hay que pasar nomb_compania, cod_zona_cliente y
+     cod_ruta_cliente. Los cuatro filtros de esta vista vienen guardados apuntando
+     a HUEHUETENANGO y los tres últimos son DEPENDIENTES: si el conjunto da cero
+     filas caen a "(Ninguno)" y ni siquiera se dibuja el panel de Mes. Los mapas
+     territorio -> compañías / zonas / rutas viven en scripts/companias_sellout.py,
+     zonas_sellout.py y rutas_sellout.py.
+     ⚠️ Las comas dentro de un valor van ESCAPADAS (ver _param_filtro): la coma es
+     el separador de valores múltiples de Tableau, así que sin escapar
+     "CORPORACION EKELES, S.A." se parte en dos valores que no existen.
 
 CORREGIDO 2026-08-27 (primera corrida real, run 33085005587: los 40 jobs
 terminaron en error_sin_panel_territorio.png y cero CSV). La versión original
@@ -86,6 +91,27 @@ os.makedirs(SALIDA_DIR, exist_ok=True)
 # parametro vacio seria peor: sin el, manda el filtro guardado de la vista y el
 # territorio devuelve vacio en silencio.
 _TODAS_LAS_COMPANIAS = sorted({c for v in COMPANIAS_POR_SUCURSAL.values() for c in v})
+
+
+def _param_filtro(valores) -> str:
+    """Une varios valores para un filtro de Tableau en la URL, ESCAPANDO las comas
+    que vengan dentro de un valor.
+
+    Sin esto, 'DESARROLLOS COMERCIALES DEL SUR, SOCIEDAD ANONIMA' se parte en dos
+    valores inexistentes (la coma es el separador de valores multiples de
+    Tableau), el filtro queda vacio, y con cero filas los filtros dependientes
+    (zona, ruta) caen a "(Ninguno)" y el panel de Mes ni se dibuja -- el
+    "mejor frame: 4 checkboxes" con el que morian 9 de los 14 territorios de los
+    runs 33114619647 y 33116367726. Son exactamente los territorios cuya compania
+    lleva coma en el nombre: CHIQUIMULILLA, COBAN, ESCUINTLA, COATEPEQUE, CUBULCO,
+    EL ESTOR... mientras que CHIQUIMULA ('DISTRIBUCIONES Y GLOBALIZACIONES DE
+    ORIENTE S.A', sin coma) siempre habia funcionado.
+
+    Verificado contra el servidor real el 2026-08-27: CHIQUIMULILLA da VACIO sin
+    escapar y 17,502 filas con la coma escapada."""
+    return ",".join(str(v).replace(",", "\\,") for v in valores)
+
+
 _COMPANIAS = COMPANIAS_POR_SUCURSAL.get(TERRITORIO) or _TODAS_LAS_COMPANIAS
 if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
     print(f"AVISO: '{TERRITORIO}' no esta en companias_sellout.py -- se pasan las "
@@ -108,10 +134,10 @@ _ZONAS = ZONAS_POR_SUCURSAL.get(TERRITORIO, [])
 URL_VISTA = (
     "https://bitableau.ajegroup.com/#/site/Cam/views/Reportera_Comercial/DATAPARAANALISISSELLOUT"
     f"?:iid=3&nomb_sucursal={urllib.parse.quote(TERRITORIO)}"
-    "&nomb_compania=" + urllib.parse.quote(",".join(_COMPANIAS))
+    "&nomb_compania=" + urllib.parse.quote(_param_filtro(_COMPANIAS))
 )
 if _ZONAS:
-    URL_VISTA += "&cod_zona_cliente=" + urllib.parse.quote(",".join(_ZONAS))
+    URL_VISTA += "&cod_zona_cliente=" + urllib.parse.quote(_param_filtro(_ZONAS))
 else:
     print(f"AVISO: '{TERRITORIO}' no tiene zonas en zonas_sellout.py -- se deja el "
           f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
@@ -122,7 +148,7 @@ else:
 # la vista la habia autorresuelto a "(Todo)".
 _RUTAS = RUTAS_POR_SUCURSAL.get(TERRITORIO, [])
 if _RUTAS:
-    URL_VISTA += "&cod_ruta_cliente=" + urllib.parse.quote(",".join(_RUTAS))
+    URL_VISTA += "&cod_ruta_cliente=" + urllib.parse.quote(_param_filtro(_RUTAS))
 else:
     print(f"AVISO: '{TERRITORIO}' no tiene rutas en rutas_sellout.py -- se deja el "
           f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
