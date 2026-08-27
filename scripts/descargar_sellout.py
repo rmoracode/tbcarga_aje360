@@ -40,6 +40,7 @@ Actions es la parte de navegador (login + checkboxes de Mes/Año + descarga),
 porque las credenciales son secrets del repo -- ahí siguen valiendo las capturas
 de SALIDA_DIR como diagnóstico, mismo criterio que descargar.py.
 """
+import io
 import json
 import os
 import re
@@ -230,6 +231,83 @@ def estado_de_anio(fr, anio_objetivo: str) -> bool:
     return False
 
 
+def aplicar_filtros(fr) -> int:
+    """Click en los botones 'Aplicar' de los paneles de Mes/Año.
+
+    Corregido 2026-08-27 (run 33113079979): CHIQUIMULA bajó un CSV real y con el
+    territorio correcto, pero con 'mayo de 2026' -- el mes que la vista trae
+    guardado -- aunque el script había marcado agosto y verificado los checkboxes.
+    La causa: en ESTA vista los filtros de Mes y Año son de aplicación DIFERIDA
+    (tienen sus propios botones Cancelar/Aplicar, visibles en las capturas del
+    panel), así que marcar el checkbox no toca la tabla hasta apretar Aplicar. El
+    docstring original afirmaba lo contrario ("esas SÍ aplican el cambio al
+    vuelo") -- cierto en la vista de ventas, falso en la de sellout.
+
+    Se reconsulta el locator en cada vuelta porque al aplicar un panel el otro
+    puede re-renderizarse y dejar el handle viejo obsoleto."""
+    clicks = 0
+    for _ in range(4):
+        try:
+            botones = fr.get_by_text(RE_APLICAR, exact=False)
+            total = botones.count()
+        except Exception:
+            break
+        clickeado_esta_vuelta = False
+        for i in range(total):
+            try:
+                boton = botones.nth(i)
+                if not boton.is_visible() or boton.is_disabled():
+                    continue
+                boton.click(timeout=5000)
+                clicks += 1
+                clickeado_esta_vuelta = True
+                print(f"  click en 'Aplicar' ({clicks})", flush=True)
+                time.sleep(4)
+                break  # el DOM cambia: se vuelve a consultar desde cero
+            except Exception as e:
+                print(f"  (no se pudo clickear un 'Aplicar': {str(e)[:80]})", flush=True)
+        if not clickeado_esta_vuelta:
+            break
+    if clicks == 0:
+        print("  AVISO: ningún botón 'Aplicar' habilitado -- puede que el filtro ya "
+              "estuviera aplicado, o que el selector no lo encontró.", flush=True)
+    return clicks
+
+
+def verificar_mes_del_csv(ruta: str, mes_objetivo: str, anio_objetivo: str) -> None:
+    """Falla fuerte si el CSV no trae EXACTAMENTE el mes pedido.
+
+    Sin esto, el bug del run 33113079979 pasaba en silencio: el archivo se subía
+    como artifact con nombre 'agosto_CHIQUIMULA.csv' pero contenía mayo, y el
+    pipeline de grandes_perdidas_bot lo habría metido al parquet como si fuera
+    agosto. Mismo criterio de cero tolerancia a mezcla de meses que ya aplica
+    servicios/sincronizador_datos.py del otro lado."""
+    import csv as _csv
+
+    esperado = f"{mes_objetivo} de {anio_objetivo}"
+    col_mes = "Mes, Año de fecha_liquidacion"
+    with io.open(ruta, encoding="utf-16", newline="") as f:
+        lector = _csv.DictReader(f, delimiter="\t")
+        if lector.fieldnames is None or col_mes not in lector.fieldnames:
+            raise SystemExit(
+                f"El CSV no trae la columna {col_mes!r}. Columnas: {lector.fieldnames}"
+            )
+        meses = set()
+        filas = 0
+        for fila in lector:
+            filas += 1
+            valor = (fila.get(col_mes) or "").strip()
+            if valor:
+                meses.add(valor)
+    print(f"  verificación: {filas:,} filas, meses en el archivo: {sorted(meses)}", flush=True)
+    if meses != {esperado}:
+        raise SystemExit(
+            f"MES INCORRECTO: se pidió {esperado!r} pero el CSV trae {sorted(meses)}. "
+            f"Se aborta sin publicar el archivo -- mejor sin datos que con el mes "
+            f"equivocado metido al parquet como si fuera el correcto."
+        )
+
+
 def main() -> int:
     with sync_playwright() as p:
         navegador = p.chromium.launch(headless=True)
@@ -297,6 +375,11 @@ def main() -> int:
         else:
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_filtro_anio.png"))
             raise SystemExit(f"No se pudo dejar marcado el año '{ANIO_OBJETIVO}' tras 4 intentos.")
+
+        # Mes y Año son de aplicación diferida en esta vista: sin este click la
+        # tabla sigue mostrando el mes guardado (ver aplicar_filtros).
+        print("Aplicando los filtros de Mes/Año...", flush=True)
+        aplicar_filtros(fr)
 
         print("Esperando 60s fijos a que la tabla recargue...", flush=True)
         time.sleep(60)
@@ -377,6 +460,11 @@ def main() -> int:
         ruta_salida = os.path.join(SALIDA_DIR, nombre)
         descarga.save_as(ruta_salida)
         print(f"OK -- Archivo descargado: {ruta_salida} ({os.path.getsize(ruta_salida):,} bytes)", flush=True)
+
+        # Se valida DESPUÉS de guardar: si el mes no es el pedido, el archivo queda
+        # en SALIDA_DIR para poder inspeccionarlo, pero el job falla y el artifact
+        # no se toma como bueno.
+        verificar_mes_del_csv(ruta_salida, MES_OBJETIVO, ANIO_OBJETIVO)
 
         contexto.close()
         navegador.close()
