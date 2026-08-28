@@ -46,11 +46,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - id: leer
+        # Por defecto UN solo job con TERRITORIO="" -- el script baja las 40
+        # sucursales de una (ver MODO_TODOS en scripts/descargar_sellout.py).
+        # Antes esto expandia la matriz a 40 jobs: 38 min por corrida y ~200 min
+        # de Actions POR DIA, con el plan del repo privado agotandose en ~10 dias.
+        # `solo_un_territorio` sigue sirviendo para depurar uno puntual.
         run: |
           if [ -n "${{ github.event.inputs.solo_un_territorio }}" ]; then
             python3 -c "import json; print('territorios=' + json.dumps(['${{ github.event.inputs.solo_un_territorio }}']))" >> "$GITHUB_OUTPUT"
           else
-            echo "territorios=$(python3 scripts/sucursales_sellout.py --json)" >> "$GITHUB_OUTPUT"
+            echo 'territorios=[""]' >> "$GITHUB_OUTPUT"
           fi
       - id: mesesjson
         run: |

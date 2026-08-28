@@ -31,7 +31,9 @@ funciones que clickeaban el desplegable.
 Variables de entorno esperadas:
     TABLEAU_USER             usuario de Tableau (secret, mismo que descargar.py)
     TABLEAU_PASSWORD         clave de Tableau (secret, mismo que descargar.py)
-    TERRITORIO                default: "CHIQUIMULA" (ver scripts/sucursales_sellout.py)
+    TERRITORIO                VACIO (default) = las 40 sucursales en UNA descarga.
+                              Con un nombre (ver scripts/sucursales_sellout.py) baja
+                              solo ese territorio -- se conserva para depurar.
     MES_OBJETIVO              default: "agosto"
     MES_A_DESMARCAR           default: "" (si vacio, no desmarca nada)
     ANIO_OBJETIVO             default: año actual UTC
@@ -64,8 +66,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from companias_sellout import COMPANIAS_POR_SUCURSAL  # noqa: E402
 from zonas_sellout import ZONAS_POR_SUCURSAL  # noqa: E402
 from rutas_sellout import RUTAS_POR_SUCURSAL  # noqa: E402
+from sucursales_sellout import SUCURSALES_SELLOUT  # noqa: E402
 
-TERRITORIO = os.environ.get("TERRITORIO", "CHIQUIMULA")
+TERRITORIO = os.environ.get("TERRITORIO", "")
 MES_OBJETIVO = os.environ.get("MES_OBJETIVO", "agosto")
 MES_A_DESMARCAR = os.environ.get("MES_A_DESMARCAR", "")
 ANIO_OBJETIVO = os.environ.get("ANIO_OBJETIVO") or str(datetime.now(timezone.utc).year)
@@ -112,11 +115,41 @@ def _param_filtro(valores) -> str:
     return ",".join(str(v).replace(",", "\\,") for v in valores)
 
 
-_COMPANIAS = COMPANIAS_POR_SUCURSAL.get(TERRITORIO) or _TODAS_LAS_COMPANIAS
-if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
-    print(f"AVISO: '{TERRITORIO}' no esta en companias_sellout.py -- se pasan las "
-          f"{len(_TODAS_LAS_COMPANIAS)} companias conocidas. Conviene regenerar ese mapa.",
-          flush=True)
+# MODO TODOS (TERRITORIO vacio): baja las 40 sucursales de una sola vez, en vez de
+# una corrida por territorio. Es lo que el dueno del dato hace a mano -- sus CSV
+# historicos traen las 40 sucursales y ~380k filas en un solo archivo, o sea que la
+# descarga de tabulacion cruzada aguanta el pais entero.
+#
+# Motivo del cambio (2026-08-27): la matriz de 40 jobs tardaba 38 min y quemaba unos
+# 200 minutos de GitHub Actions POR DIA solo para econored -- el plan del repo
+# privado se agota en ~10 dias, y ya hubo un incidente por quedarse sin minutos.
+# Ademas el bot esperaba como maximo 40 min, o sea 2 min de margen sobre los 38
+# reales: cualquier demora en la cola lo hacia fallar.
+MODO_TODOS = not TERRITORIO.strip()
+# Etiqueta para logs, nombre del CSV y marcadores SIN_DATOS.
+ETIQUETA = "TODOS" if MODO_TODOS else TERRITORIO
+
+if MODO_TODOS:
+    _SUCURSALES = SUCURSALES_SELLOUT
+    _COMPANIAS = _TODAS_LAS_COMPANIAS
+    _ZONAS = sorted({z for v in ZONAS_POR_SUCURSAL.values() for z in v})
+    # Las rutas NO se mandan en este modo: serian ~1600 valores (>9000 chars) y la
+    # URL no lo aguanta. Con todas las zonas seleccionadas el filtro de ruta deberia
+    # autorresolverse a "(Todo)", que es como quedo en los territorios que si
+    # funcionaron. Si no lo hace, se ve en error_sin_filtros.png y se vuelve al modo
+    # por territorio (basta con restaurar la matriz en el workflow).
+    _RUTAS = []
+    print(f"MODO TODOS: {len(_SUCURSALES)} sucursales, {len(_COMPANIAS)} companias, "
+          f"{len(_ZONAS)} zonas, en una sola descarga.", flush=True)
+else:
+    _SUCURSALES = [TERRITORIO]
+    _COMPANIAS = COMPANIAS_POR_SUCURSAL.get(TERRITORIO) or _TODAS_LAS_COMPANIAS
+    _ZONAS = ZONAS_POR_SUCURSAL.get(TERRITORIO, [])
+    _RUTAS = RUTAS_POR_SUCURSAL.get(TERRITORIO, [])
+    if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
+        print(f"AVISO: '{TERRITORIO}' no esta en companias_sellout.py -- se pasan las "
+              f"{len(_TODAS_LAS_COMPANIAS)} companias conocidas. Conviene regenerar ese mapa.",
+              flush=True)
 
 # cod_zona_cliente TAMBIEN va en la URL. Es un filtro dependiente que viene
 # guardado en 50000 (zona de HUEHUETENANGO): al cambiar de sucursal por URL esa
@@ -130,28 +163,26 @@ if TERRITORIO not in COMPANIAS_POR_SUCURSAL:
 # (CHIQUIMULA 40400 y 40401, PETEN 44600/44601, ...) y en la corrida que si
 # funciono la vista habia autoseleccionado solo una, o sea que ese CSV venia
 # incompleto sin que nada lo avisara.
-_ZONAS = ZONAS_POR_SUCURSAL.get(TERRITORIO, [])
 URL_VISTA = (
     "https://bitableau.ajegroup.com/#/site/Cam/views/Reportera_Comercial/DATAPARAANALISISSELLOUT"
-    f"?:iid=3&nomb_sucursal={urllib.parse.quote(TERRITORIO)}"
-    "&nomb_compania=" + urllib.parse.quote(_param_filtro(_COMPANIAS))
+    "?:iid=3&nomb_sucursal=" + urllib.parse.quote(_param_filtro(_SUCURSALES))
+    + "&nomb_compania=" + urllib.parse.quote(_param_filtro(_COMPANIAS))
 )
 if _ZONAS:
     URL_VISTA += "&cod_zona_cliente=" + urllib.parse.quote(_param_filtro(_ZONAS))
 else:
-    print(f"AVISO: '{TERRITORIO}' no tiene zonas en zonas_sellout.py -- se deja el "
+    print(f"AVISO: sin zonas para '{TERRITORIO}' en zonas_sellout.py -- se deja el "
           f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
 
 # cod_ruta_cliente es el TERCER filtro dependiente (ver rutas_sellout.py): con la
 # zona ya corregida, CHIQUIMULILLA seguia muriendo porque la ruta quedaba en
 # "(Ninguno)" -- captura del run 33116367726. En el territorio que si funcionaba
 # la vista la habia autorresuelto a "(Todo)".
-_RUTAS = RUTAS_POR_SUCURSAL.get(TERRITORIO, [])
 if _RUTAS:
     URL_VISTA += "&cod_ruta_cliente=" + urllib.parse.quote(_param_filtro(_RUTAS))
 else:
-    print(f"AVISO: '{TERRITORIO}' no tiene rutas en rutas_sellout.py -- se deja el "
-          f"filtro como venga. Conviene regenerar ese mapa.", flush=True)
+    print("Sin filtro de ruta en la URL (modo todos, o territorio sin rutas "
+          "mapeadas): se deja como lo resuelva la vista.", flush=True)
 
 URL_LOGIN = "https://bitableau.ajegroup.com/#/signin"
 
@@ -378,7 +409,7 @@ def main() -> int:
 
         # El territorio ya viene aplicado en la URL (ver URL_VISTA arriba) -- no hay
         # panel que abrir ni checkbox que clickear para esto.
-        print(f"Territorio '{TERRITORIO}' aplicado por URL "
+        print(f"Alcance '{ETIQUETA}' aplicado por URL "
               f"(companias: {_COMPANIAS or 'todas'})", flush=True)
 
         print("Buscando el panel de Mes/Año...", flush=True)
@@ -414,10 +445,10 @@ def main() -> int:
             # caso de "boton de descarga deshabilitado".
             meses_ofrecidos = [t for t in textos if t.strip().lower() in MESES_LISTA]
             if meses_ofrecidos:
-                print(f"SIN DATOS -- '{TERRITORIO}' no tiene {MES_OBJETIVO}; el panel solo "
+                print(f"SIN DATOS -- '{ETIQUETA}' no tiene {MES_OBJETIVO}; el panel solo "
                       f"ofrece {meses_ofrecidos}. No es un error.", flush=True)
                 marcador = os.path.join(
-                    SALIDA_DIR, f"SIN_DATOS_{TERRITORIO.replace(' ', '_')}.marker")
+                    SALIDA_DIR, f"SIN_DATOS_{ETIQUETA.replace(' ', '_')}.marker")
                 open(marcador, "w").close()
                 contexto.close()
                 navegador.close()
@@ -532,9 +563,9 @@ def main() -> int:
             raise SystemExit("No se encontro boton Descargar/Download del dialogo")
 
         if boton_final.is_disabled():
-            print(f"SIN DATOS -- '{TERRITORIO}' no tiene filas para "
+            print(f"SIN DATOS -- '{ETIQUETA}' no tiene filas para "
                   f"{MES_OBJETIVO}. No es un error.", flush=True)
-            marcador = os.path.join(SALIDA_DIR, f"SIN_DATOS_{TERRITORIO.replace(' ', '_')}.marker")
+            marcador = os.path.join(SALIDA_DIR, f"SIN_DATOS_{ETIQUETA.replace(' ', '_')}.marker")
             open(marcador, "w").close()
             contexto.close()
             navegador.close()
@@ -544,7 +575,7 @@ def main() -> int:
         with pagina.expect_download(timeout=150000) as info_descarga:
             boton_final.click()
         descarga = info_descarga.value
-        nombre = f"{MES_OBJETIVO}_{TERRITORIO.replace(' ', '_')}.csv"
+        nombre = f"{MES_OBJETIVO}_{ETIQUETA.replace(' ', '_')}.csv"
         ruta_salida = os.path.join(SALIDA_DIR, nombre)
         descarga.save_as(ruta_salida)
         print(f"OK -- Archivo descargado: {ruta_salida} ({os.path.getsize(ruta_salida):,} bytes)", flush=True)
