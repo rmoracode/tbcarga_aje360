@@ -500,8 +500,11 @@ def main() -> int:
         print("Aplicando los filtros de Mes/Año...", flush=True)
         aplicar_filtros(fr)
 
-        print("Esperando 60s fijos a que la tabla recargue...", flush=True)
-        time.sleep(60)
+        # En modo todos la tabla es el pais entero (~380k filas), no un territorio
+        # (~20k): tarda bastante mas en repintarse despues de aplicar el filtro.
+        espera_recarga = 150 if MODO_TODOS else 60
+        print(f"Esperando {espera_recarga}s fijos a que la tabla recargue...", flush=True)
+        time.sleep(espera_recarga)
         pagina.screenshot(path=os.path.join(SALIDA_DIR, "antes_de_descargar.png"))
 
         mejor, mejor_n = None, 0
@@ -572,7 +575,13 @@ def main() -> int:
             return 0
 
         print("Click final, esperando el archivo...", flush=True)
-        with pagina.expect_download(timeout=150000) as info_descarga:
+        # Timeout del archivo: 15 min en modo todos, 2.5 min por territorio. El
+        # run 33140887999 llego hasta aca correctamente (filtros aplicados, agosto
+        # marcado, Aplicar apretado) y murio en "Timeout 150000ms exceeded while
+        # waiting for event download": generar la tabulacion cruzada del pais entero
+        # tarda mucho mas que la de un solo territorio.
+        timeout_descarga = 900000 if MODO_TODOS else 150000
+        with pagina.expect_download(timeout=timeout_descarga) as info_descarga:
             boton_final.click()
         descarga = info_descarga.value
         nombre = f"{MES_OBJETIVO}_{ETIQUETA.replace(' ', '_')}.csv"
