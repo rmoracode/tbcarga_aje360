@@ -8,9 +8,9 @@ on:
         required: false
         default: "agosto"
       mes_a_desmarcar:
-        description: "Mes actualmente marcado a desmarcar (vacio = ninguno)"
+        description: "Mes actualmente marcado a desmarcar (vacio = ninguno; se calcula del mes anterior si no se pasa)"
         required: false
-        default: "mayo"
+        default: ""
   # Sin `schedule:` a propósito (2026-08-09): antes corría por su propio cron a las
   # 06:00 GT Y por el disparo de un sincronizador externo casi a la misma hora --
   # dos disparos seguidos duplicaban la carga de 10 sesiones simultáneas sobre
@@ -96,10 +96,14 @@ jobs:
         # fallback hardcodeado 'agosto'/'mayo' -- correcto hoy por coincidencia,
         # pero se habría roto en silencio en septiembre (mismo patrón ya
         # arreglado en descargar_incentivos.yml, esto se le había quedado atrás).
+        # 2026-09-03: CRÍTICO -- ahora se resta 6 horas para Guatemala (UTC-6),
+        # igual que sincronizador_datos._mes_actual(). Sin esto, a las ~18:00 UTC
+        # (00:00 GT del día siguiente) el workflow calculaba mes incorrecto antes
+        # de que Tableau tuviera los datos del día nuevo.
         id: mes
         run: |
           MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
-          MES_NUM=$(date -u +%-m)
+          MES_NUM=$(date -u --date='-6 hours' +%-m)
           MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
           MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
           echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
@@ -187,7 +191,7 @@ jobs:
         id: mes
         run: |
           MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
-          MES_NUM=$(date -u +%-m)
+          MES_NUM=$(date -u --date='-6 hours' +%-m)
           MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
           MES_PREV="${MESES[$(((MES_NUM - 2 + 12) % 12))]}"
           echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
@@ -249,7 +253,7 @@ jobs:
         id: mes
         run: |
           MESES=(enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre)
-          MES_NUM=$(date -u +%-m)
+          MES_NUM=$(date -u --date='-6 hours' +%-m)
           ANIO=$(date -u +%Y)
           MES_ACTUAL="${MESES[$((MES_NUM - 1))]}"
           echo "actual=$MES_ACTUAL" >> "$GITHUB_OUTPUT"
