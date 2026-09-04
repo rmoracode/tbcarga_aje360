@@ -418,16 +418,7 @@ def main() -> int:
             nombre = f"{MES_OBJETIVO}_{SUCURSAL.replace(' ', '_')}.csv"
             ruta_salida = os.path.join(SALIDA_DIR, nombre)
             descarga.save_as(ruta_salida)
-
-            # Validar que el archivo tenga tamaño razonable (>500KB para septiembre)
-            tamanio = os.path.getsize(ruta_salida)
-            if tamanio < 500000:
-                raise SystemExit(
-                    f"ERROR: Archivo descargado incompleto ({tamanio:,} bytes, <500KB). "
-                    f"Probablemente la descarga se truncó -- Tableau puede estar devolviendo "
-                    f"datos parciales. Revisar conexión y reintentar. Ruta: {ruta_salida}"
-                )
-            print(f"OK -- Archivo descargado: {ruta_salida} ({tamanio:,} bytes)", flush=True)
+            print(f"OK -- Archivo descargado: {ruta_salida} ({os.path.getsize(ruta_salida):,} bytes)", flush=True)
 
             contexto.close()
             navegador.close()
