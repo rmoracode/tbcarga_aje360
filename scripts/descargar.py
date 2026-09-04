@@ -410,13 +410,24 @@ def main() -> int:
             # (.github/workflows/descargar.yml, job reintentar_faltantes) es la
             # red de seguridad real, esto solo reduce cuantas veces hace falta.
             print("Click final, esperando el archivo...", flush=True)
-            with pagina.expect_download(timeout=150000) as info_descarga:
+            # Timeout ampliado a 600s (10 min) para archivos grandes de septiembre+
+            # que pueden tardar más en completar la descarga desde Tableau
+            with pagina.expect_download(timeout=600000) as info_descarga:
                 boton_final.click()
             descarga = info_descarga.value
             nombre = f"{MES_OBJETIVO}_{SUCURSAL.replace(' ', '_')}.csv"
             ruta_salida = os.path.join(SALIDA_DIR, nombre)
             descarga.save_as(ruta_salida)
-            print(f"OK -- Archivo descargado: {ruta_salida} ({os.path.getsize(ruta_salida):,} bytes)", flush=True)
+
+            # Validar que el archivo tenga tamaño razonable (>500KB para septiembre)
+            tamanio = os.path.getsize(ruta_salida)
+            if tamanio < 500000:
+                raise SystemExit(
+                    f"ERROR: Archivo descargado incompleto ({tamanio:,} bytes, <500KB). "
+                    f"Probablemente la descarga se truncó -- Tableau puede estar devolviendo "
+                    f"datos parciales. Revisar conexión y reintentar. Ruta: {ruta_salida}"
+                )
+            print(f"OK -- Archivo descargado: {ruta_salida} ({tamanio:,} bytes)", flush=True)
 
             contexto.close()
             navegador.close()
