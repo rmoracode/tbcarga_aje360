@@ -218,6 +218,40 @@ def estado_de_anio(fr, anio_objetivo: str) -> bool:
     return False
 
 
+# 2026-09-09 -- BUG REAL encontrado a mano (usuario comparando contra Tableau
+# directo): el MISMO panel de filtros tiene una lista de checkboxes por DIA
+# ("fecha_liquidacion", formato DD/MM/AAAA -- ver el comentario en
+# encontrar_frame_con_checkboxes sobre por que esta lista varia de largo por
+# sucursal). El script nunca tocaba este filtro -- igual que pasaba con Año
+# antes del fix de 2026-08-09, se confiaba en que quedara "todos marcados" de
+# una sesion anterior. Si alguien (una persona, o una corrida vieja) dejo solo
+# un par de dias marcados a mano en la vista de Tableau, CADA corrida
+# automatica heredaba ese mismo recorte en silencio: la tabulacion cruzada de
+# "septiembre" solo reflejaba esos 2-3 dias y no crecia mas dia a dia, sin
+# ningun error visible -- el boton de Descargar sigue habilitado, el CSV se
+# genera normal, solo que con muchas menos filas de las que le tocaban.
+RE_FECHA_DIA = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+
+
+def dias_sin_marcar(fr) -> list[str]:
+    """Textos de los checkboxes de dia (fecha_liquidacion) que estan SIN marcar
+    en este momento. Un dia sin marcar excluye esa fecha de la tabulacion
+    cruzada -- para "todo el mes hasta hoy" no debe quedar ninguno afuera."""
+    checks = fr.locator("input[type=checkbox]")
+    faltantes = []
+    for i in range(checks.count()):
+        el = checks.nth(i)
+        try:
+            if el.is_checked():
+                continue
+        except Exception:
+            continue
+        texto = texto_de_checkbox(el)
+        if RE_FECHA_DIA.match(texto):
+            faltantes.append(texto)
+    return faltantes
+
+
 def main() -> int:
     with sync_playwright() as p:
         if True:  # (bloque conservado para no re-indentar todo el cuerpo)
@@ -320,6 +354,29 @@ def main() -> int:
                     f"error_filtro_anio.png. Se aborta sin descargar (mejor sin csv que con la "
                     f"tabulacion cruzada vacia por filtro de año en blanco) -- reintentar_faltantes "
                     f"lo reintenta solo."
+                )
+
+            # Verificacion explicita del filtro de DIA (fecha_liquidacion) --
+            # ver el comentario largo junto a dias_sin_marcar() mas arriba
+            # sobre por que esto puede quedar recortado en silencio.
+            print("Verificando que todos los dias de fecha_liquidacion esten marcados...", flush=True)
+            for intento_dias in range(4):
+                faltantes = dias_sin_marcar(fr)
+                if not faltantes:
+                    print("Filtro de dia verificado: todos los dias disponibles estan marcados.", flush=True)
+                    break
+                print(f"  verificacion {intento_dias+1}/4: {len(faltantes)} dia(s) sin marcar -- "
+                      f"marcando: {faltantes}", flush=True)
+                for dia in faltantes:
+                    click_checkbox_por_texto(fr, dia)
+                time.sleep(5 * (intento_dias + 1))
+            else:
+                faltantes = dias_sin_marcar(fr)
+                pagina.screenshot(path=os.path.join(SALIDA_DIR, "error_filtro_dia_incompleto.png"))
+                raise SystemExit(
+                    f"No se pudieron marcar todos los dias de fecha_liquidacion tras 4 intentos -- "
+                    f"quedaron sin marcar: {faltantes}. Se aborta sin descargar (mejor sin csv que con "
+                    f"septiembre recortado a solo algunos dias) -- reintentar_faltantes lo reintenta solo."
                 )
 
             print("Esperando 60s fijos a que la tabla recargue...", flush=True)
