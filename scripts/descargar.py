@@ -379,6 +379,34 @@ def main() -> int:
                     f"septiembre recortado a solo algunos dias) -- reintentar_faltantes lo reintenta solo."
                 )
 
+            # 2026-09-10 -- BUG REAL encontrado (usuario comparando el total contra una
+            # exportacion manual desde Tableau: Q52,970 en Tableau vs Q11,074 en nuestro CSV,
+            # identico en 3 corridas seguidas a pesar de que el fix de arriba SI marcaba mas
+            # dias cada vez). A diferencia de Mes/Año (checkboxes simples que aplican solo con
+            # el click), el filtro de fecha_liquidacion es un control de lista compacta con
+            # botones "Cancelar"/"Aplicar" visibles en las capturas (antes_de_descargar.png) --
+            # marcar los checkboxes solo deja el cambio "preparado"; sin clickear Aplicar la
+            # tabulacion cruzada real NUNCA vuelve a consultarse con los dias nuevos, y se
+            # queda congelada en lo ultimo que alguien aplico a mano (posiblemente hace
+            # semanas). El script nunca buscaba este boton -- se agrega acá.
+            print("Buscando boton 'Aplicar' del filtro de dia...", flush=True)
+            boton_aplicar = None
+            for scope in (fr, pagina):
+                try:
+                    loc = scope.get_by_text(re.compile(r"Aplicar|Apply", re.IGNORECASE), exact=False)
+                    if loc.count() > 0:
+                        boton_aplicar = loc.last
+                        break
+                except Exception:
+                    pass
+            if boton_aplicar is not None:
+                boton_aplicar.click()
+                print("Click en 'Aplicar' hecho -- esperando a que la tabla recalcule.", flush=True)
+                time.sleep(5)
+            else:
+                print("No se encontro boton 'Aplicar' -- puede que este filtro aplique solo, "
+                      "o que ya no tenga cambios pendientes.", flush=True)
+
             print("Esperando 60s fijos a que la tabla recargue...", flush=True)
             time.sleep(60)
             pagina.screenshot(path=os.path.join(SALIDA_DIR, "antes_de_descargar.png"))
