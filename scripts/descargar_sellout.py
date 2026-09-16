@@ -575,12 +575,21 @@ def main() -> int:
             return 0
 
         print("Click final, esperando el archivo...", flush=True)
-        # Timeout del archivo: 15 min en modo todos, 2.5 min por territorio. El
+        # Timeout del archivo: 25 min en modo todos, 2.5 min por territorio. El
         # run 33140887999 llego hasta aca correctamente (filtros aplicados, agosto
         # marcado, Aplicar apretado) y murio en "Timeout 150000ms exceeded while
         # waiting for event download": generar la tabulacion cruzada del pais entero
-        # tarda mucho mas que la de un solo territorio.
-        timeout_descarga = 900000 if MODO_TODOS else 150000
+        # tarda mucho mas que la de un solo territorio. Subido de 15 a 25 min el
+        # 2026-09-16: el run 35114629381 llego otra vez hasta aca y murio en
+        # "Timeout 900000ms exceeded" -- el dataset de sellout sigue creciendo
+        # (mas territorios/companias con el tiempo) y la tabulacion de TODOS ya
+        # tarda mas de 15 min en generarse del lado de Tableau. Si esto vuelve a
+        # pasar, la solucion de fondo es dejar de bajar todo en una sola vista
+        # combinada (ver el comentario de MODO_TODOS mas arriba sobre por que se
+        # cambio a esto el 2026-08-27: ahorra minutos de GitHub Actions vs la
+        # matriz de un job por territorio, pero un timeout mayor no es gratis
+        # para siempre si el pais sigue sumando distribuidores).
+        timeout_descarga = 1500000 if MODO_TODOS else 150000
         with pagina.expect_download(timeout=timeout_descarga) as info_descarga:
             boton_final.click()
         descarga = info_descarga.value
